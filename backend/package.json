@@ -1,0 +1,14 @@
+{
+  "name": "groupvote-functions",
+  "description": "Cloud Functions for GroupVote — LLM-powered option suggestions.",
+  "type": "module",
+  "private": true,
+  "main": "index.js",
+  "engines": {
+    "node": "20"
+  },
+  "dependencies": {
+    "@google/genai": "^1.0.0",
+    "firebase-functions": "^6.0.0"
+  }
+}

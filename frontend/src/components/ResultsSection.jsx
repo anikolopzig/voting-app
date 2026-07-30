@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { Fragment, useMemo } from 'react';
 import { getMethod } from '../utils/scoring.js';
 import { getParticipantNames } from '../utils/room.js';
 import VoterDot from './VoterDot.jsx';
@@ -7,11 +7,12 @@ import EvaluatorToggle from './EvaluatorToggle.jsx';
 // Compute a per-option value with the chosen method, over ONLY submitted votes,
 // sorted descending. All methods return a 1–10 value so bars stay comparable.
 //
-// The VIP's vote counts double: their score is added to the array TWICE, which
+// A VIP's vote counts double: their score is added to the array TWICE, which
 // doubles its weight for mean and geomean (and, correctly, doesn't change min —
 // a worst-case is a worst-case regardless of weight). `count` stays the real
 // number of voters, so the displayed "N voters" isn't inflated by the weighting.
-function computeResults(options, votes, method, vip) {
+// `vips` is a Set of names — a room can have several.
+function computeResults(options, votes, method, vips) {
   const submitted = Object.entries(votes).filter(([, v]) => v?.submitted === true);
 
   const rows = options.map((opt) => {
@@ -19,11 +20,12 @@ function computeResults(options, votes, method, vip) {
     const byBucket = new Map(); // bucketed score -> [{name, score}] for the dots
     let count = 0;
     for (const [name, v] of submitted) {
-      const s = v.scores?.[opt];
-      if (typeof s !== 'number') continue;
+      const raw = v.scores?.[opt];
+      if (typeof raw !== 'number' || Number.isNaN(raw)) continue;
+      const s = Math.min(10, Math.max(1, raw)); // defend the [1,10] invariant (geomean uses ln)
       count += 1;
       weighted.push(s);
-      if (name === vip) weighted.push(s); // VIP vote counts double
+      if (vips.has(name)) weighted.push(s); // VIP vote counts double
       // Decimal scores can land two people ~1% apart on the bar, where they'd
       // overlap invisibly instead of forming a fannable cluster. Bucket to the
       // nearest 0.25 so near-identical scores share one. Whole numbers are
@@ -57,14 +59,14 @@ export default function ResultsSection({
   ended,
   methodId,
   onMethodChange,
-  vip,
+  vips,
   me,
   highlightName,
 }) {
   const method = getMethod(methodId);
   const { rows, submittedCount } = useMemo(
-    () => computeResults(options, votes, method, vip),
-    [options, votes, method, vip]
+    () => computeResults(options, votes, method, vips),
+    [options, votes, method, vips]
   );
 
   // Count everyone in the room (present the moment they join), not just people
@@ -72,7 +74,8 @@ export default function ResultsSection({
   // only submitted votes, so someone editing reads as "hasn't voted".
   const totalParticipants = getParticipantNames({ creatorName, participants, votes }).length;
   const creatorVoted = votes?.[creatorName]?.submitted === true;
-  const vipVoted = !!vip && votes?.[vip]?.submitted === true;
+  // Sorted for a stable, deterministic listing in the note.
+  const vipNames = [...vips].sort();
 
   // Top value defines the winner set (only meaningful once someone has voted).
   // Round to avoid float dust (e.g. geometric means) splitting a real tie.
@@ -100,10 +103,18 @@ export default function ResultsSection({
           lens sits with the results it shapes (not up in the room header). */}
       <EvaluatorToggle value={methodId} onChange={onMethodChange} />
       <p className="section-note results__method-note">{method.blurb}</p>
-      {vip && (
+      {vipNames.length > 0 && (
         <p className="section-note results__vip-note">
-          ★ <strong>{vip}</strong> is a VIP —{' '}
-          {vipVoted ? 'their vote counts double.' : 'their vote will count double once submitted.'}
+          ★{' '}
+          {vipNames.map((n, i) => (
+            <Fragment key={n}>
+              {i > 0 && (i === vipNames.length - 1 ? ' and ' : ', ')}
+              <strong>{n}</strong>
+            </Fragment>
+          ))}
+          {vipNames.length === 1
+            ? ' is a VIP — their vote counts double.'
+            : ' are VIPs — their votes count double.'}
         </p>
       )}
 
@@ -155,7 +166,7 @@ export default function ResultsSection({
                             name={m.name}
                             score={m.score}
                             isMe={m.name === me}
-                            isVip={!!vip && m.name === vip}
+                            isVip={vips.has(m.name)}
                             highlighted={m.name === highlightName}
                           />
                         ))}

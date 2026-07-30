@@ -5,7 +5,10 @@
 // cleanup. `now` is passed in so callers can drive it off a ticking clock.
 export function isRoomClosed(room, now = Date.now()) {
   if (!room) return false;
-  return room.closedAt != null || now > room.expiresAt;
+  if (room.closedAt != null) return true;
+  const expires = Number(room.expiresAt);
+  if (!Number.isFinite(expires)) return true; // malformed room → treat as closed
+  return now > expires;
 }
 
 // Everyone "in the room", deduped (names are lowercase). The single source of
@@ -21,6 +24,19 @@ export function getParticipantNames(room) {
       ...Object.keys(room.votes || {}),
     ])
   ).filter(Boolean);
+}
+
+// The set of VIP names (their votes count double, see ResultsSection). Rooms may
+// have several VIPs, stored as a `vips` map { lowercasename: true }. Old rooms
+// stored a single `vip: string` — folded in here so they keep working. Returns a
+// Set for cheap membership checks; empty when nobody is a VIP.
+export function getVipNames(room) {
+  const names = new Set();
+  if (room?.vips) {
+    for (const [name, on] of Object.entries(room.vips)) if (on) names.add(name);
+  }
+  if (room?.vip) names.add(room.vip); // legacy single-VIP field
+  return names;
 }
 
 // Current options a vote has no numeric score for. A non-empty result means the

@@ -3,26 +3,28 @@ import { getParticipantNames } from '../utils/room.js';
 import { roleOf, ROLE_META } from '../utils/roles.js';
 import VoterDot from './VoterDot.jsx';
 
-// Vertical roster of everyone in the room, each with a status emoji:
-//   📄 hasn't voted yet · ✏️ editing their vote · ✅ submitted their vote.
+// Vertical roster of everyone in the room. Each person's voting status shows as a
+// small emoji badge tucked into the bottom-right corner of their avatar dot (the
+// word shows on hover), keeping the row uncluttered:
+//   💭 deciding — hasn't voted yet · ✏️ editing their vote · ✅ voted (submitted).
 //
 // "Everyone in the room" = the creator + anyone who registered presence on entry
 // + anyone who has a vote entry (presence is written in Room.jsx on room load).
 // Status comes from the vote entry, which only exists once a person has acted:
-//   no entry        -> hasn't voted        (📄)
+//   no entry        -> deciding            (💭)
 //   submitted:false -> submitted then editing again, not counting (✏️)
 //   submitted:true  -> counting (✅)
 //
-// Creator-only VIP: a single draggable badge. It lives in the pill when nobody
-// is VIP and next to the VIP's name once assigned. Dropping it on a name makes
-// them VIP (their vote counts double, see ResultsSection); dropping it back on
-// the pill clears it. `vip` is room-wide state, so the weighting is the same for
-// everyone; non-creators just see the badge as a read-only marker.
+// President-only VIP: a room can have SEVERAL VIPs (each vote counts double, see
+// ResultsSection). The pill hosts a reusable source badge — drag it onto a name
+// to add that person; each VIP also gets their own badge, which drags back onto
+// the pill to remove just them. `vips` is room-wide state, so the weighting is
+// the same for everyone; non-presidents just see the badges as read-only markers.
 
 const STATUS = {
-  none: { tag: 'Deciding', cls: 'status-tag--none', label: 'has not voted yet' },
-  editing: { tag: 'Editing', cls: 'status-tag--editing', label: 'is editing their vote' },
-  voted: { tag: 'Voted', cls: 'status-tag--voted', label: 'has submitted their vote' },
+  none: { tag: 'Deciding', emoji: '💭', cls: 'status-emoji--none' },
+  editing: { tag: 'Editing', emoji: '✏️', cls: 'status-emoji--editing' },
+  voted: { tag: 'Voted', emoji: '✅', cls: 'status-emoji--voted' },
 };
 
 function statusFor(vote) {
@@ -31,7 +33,8 @@ function statusFor(vote) {
   return STATUS.none;
 }
 
-const PILL = '__pill__'; // sentinel drop target: dropping here clears the VIP
+const PILL = '__pill__'; // sentinel drop target: dropping a VIP's badge here removes them
+const SOURCE = '__source__'; // drag payload for the pill's reusable "add a VIP" badge
 
 export default function ParticipantsList({
   creatorName,
@@ -40,10 +43,11 @@ export default function ParticipantsList({
   status,
   mode,
   me,
-  vip,
+  vips,
   canManageVip,
   canManageRoles,
-  onSetVip,
+  onAddVip,
+  onRemoveVip,
   onCycleRole,
   onPromotePresident,
   onHoverName,
@@ -62,8 +66,12 @@ export default function ParticipantsList({
     return a.localeCompare(b);
   });
 
-  // The single VIP badge. Draggable only while the creator can manage it.
-  function vipBadge() {
+  // A ★ VIP badge, draggable only while the president can manage VIPs. `dragValue`
+  // is what a drop reads: SOURCE for the pill's reusable add-badge (drop on a name
+  // to add them), or a person's name for their own badge (drop on the pill to
+  // remove them).
+  function vipBadge(dragValue) {
+    const isSource = dragValue === SOURCE;
     return (
       <span
         className="vip-badge"
@@ -72,14 +80,16 @@ export default function ParticipantsList({
           canManageVip
             ? (e) => {
                 e.dataTransfer.effectAllowed = 'move';
-                e.dataTransfer.setData('text/plain', 'vip'); // Firefox needs data set
+                e.dataTransfer.setData('text/plain', dragValue); // Firefox needs data set
               }
             : undefined
         }
         onDragEnd={canManageVip ? () => setDropTarget(null) : undefined}
         title={
           canManageVip
-            ? 'Drag onto a name to make them a VIP (their vote counts double)'
+            ? isSource
+              ? 'Drag onto a name to make them a VIP (their vote counts double)'
+              : 'Drag back to the box to remove this VIP'
             : 'VIP — this vote counts double'
         }
       >
@@ -146,7 +156,7 @@ export default function ParticipantsList({
       onDrop: (e) => {
         e.preventDefault();
         setDropTarget(null);
-        onDropHere();
+        onDropHere(e.dataTransfer.getData('text/plain')); // the dragged payload
       },
     };
   }
@@ -156,8 +166,8 @@ export default function ParticipantsList({
       <h2 className="section-title">In the room</h2>
       <ul className="participant-list">
         {names.map((name) => {
-          const { tag, cls, label } = statusFor(votes?.[name]);
-          const isVip = vip === name;
+          const { tag, emoji, cls } = statusFor(votes?.[name]);
+          const isVip = vips.has(name);
           const hasVoted = votes?.[name]?.submitted === true;
           return (
             <li
@@ -173,17 +183,25 @@ export default function ParticipantsList({
               onFocus={() => onHoverName?.(name)}
               onBlur={() => onHoverName?.(null)}
               {...dropProps(name, () => {
-                if (vip !== name) onSetVip(name);
+                // Dropping any ★ badge on a name adds that person as a VIP.
+                if (!vips.has(name)) onAddVip(name);
               })}
             >
-              <VoterDot name={name} isMe={name === me} isVip={isVip} voted={hasVoted} />
+              <span className="participant-avatar">
+                <VoterDot name={name} isMe={name === me} isVip={isVip} voted={hasVoted} />
+                <span
+                  className={`status-emoji ${cls}`}
+                  role="img"
+                  title={tag}
+                  aria-label={`${name} — ${tag}`}
+                >
+                  {emoji}
+                </span>
+              </span>
               <span className="participant-name">{name}</span>
               {name === me && <span className="participant-you">you</span>}
-              <span className={`status-tag ${cls}`} title={`${name} ${label}`}>
-                {tag}
-              </span>
               {roleChip(name)}
-              {isVip && vipBadge()}
+              {isVip && vipBadge(name)}
             </li>
           );
         })}
@@ -192,15 +210,16 @@ export default function ParticipantsList({
       {canManageVip && (
         <div
           className={'vip-pill' + (dropTarget === PILL ? ' vip-pill--drop' : '')}
-          {...dropProps(PILL, () => {
-            if (vip) onSetVip(null);
+          {...dropProps(PILL, (dragged) => {
+            // A person's badge dropped here removes just them; the source is a no-op.
+            if (dragged && dragged !== SOURCE) onRemoveVip(dragged);
           })}
         >
           <span className="vip-pill__text">
-            Is someone more equal than the rest? Make them a VIP
-            {vip && <span className="vip-pill__hint"> — drag ★ back here to remove</span>}
+            Anyone celebrating? Make them a VIP to double their vote.
+            {vips.size > 0 && <span className="vip-pill__hint"> — drag ★ back here to remove</span>}
           </span>
-          {!vip && vipBadge()}
+          {vipBadge(SOURCE)}
         </div>
       )}
 

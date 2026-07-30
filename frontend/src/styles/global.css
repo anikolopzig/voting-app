@@ -88,9 +88,9 @@ h6 {
   flex-direction: column;
   gap: 16px;
   max-width: 620px;
-  /* Clears the fixed member stack pinned top-right so it can't overlap the
-     header on narrow screens (stack occupies roughly the top ~56px band). */
-  padding-top: 60px;
+  /* Clears the fixed .room-topbar (the white bar hosting the member stack +
+     Leave button, ~64px tall) so page content starts below it, not under it. */
+  padding-top: 76px;
 }
 .page--create {
   max-width: 560px;
@@ -215,28 +215,41 @@ h6 {
   background: var(--accent-soft);
 }
 
-/* Per-person voting status pill (📄→Deciding · ✏️→Editing · ✅→Voted). */
-.status-tag {
+/* Roster avatar: the identity dot plus a small voting-status badge tucked into
+   its bottom-right corner. Roomier --dot than the 16px bars so the badge has a
+   corner to sit in. */
+.participant-avatar {
+  position: relative;
   flex: 0 0 auto;
-  font-size: 0.6rem;
-  font-weight: 800;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  padding: 3px 9px;
-  border-radius: 999px;
-  white-space: nowrap;
+  display: inline-flex;
+  --dot: 28px;
 }
-.status-tag--voted {
-  background: var(--sage-100);
-  color: var(--sage-700);
+/* Per-person voting status, as a corner emoji (🤔 deciding · ✏️ editing ·
+   ✅ voted); the word shows on hover (title). The cream halo + ring lift it off
+   whatever color the dot is. */
+.status-emoji {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: 0 0 0 1.5px var(--card);
+  font-size: 10px;
+  line-height: 1;
+  cursor: default;
 }
-.status-tag--editing {
-  background: var(--accent-200);
-  color: var(--accent-700);
+/* Subtle per-status ring so the state reads even at a glance (emoji + color). */
+.status-emoji--voted {
+  border-color: var(--sage-500);
 }
-.status-tag--none {
-  background: color-mix(in srgb, var(--text) 8%, transparent);
-  color: var(--muted);
+.status-emoji--editing {
+  border-color: var(--accent);
 }
 
 /* ---------- VIP badge + pill (president-only) ---------- */
@@ -299,11 +312,28 @@ h6 {
 /* A Google-Docs-style collapsed roster: overlapping avatars + a "+N" chip + a
    caret, fixed to the screen corner. Clicking opens the roster (ParticipantsList)
    as a popover. Sits above everything — the tooltip's z-index 20 was the app max. */
-.member-stack {
+/* White bar pinned to the very top of the page, full viewport width, staying put
+   on scroll. Right-aligned so the presence stack + Leave button sit where they
+   did before, now on a solid white strip instead of floating over the cream. */
+.room-topbar {
   position: fixed;
-  top: 14px;
-  right: 14px;
+  top: 0;
+  left: 0;
+  right: 0;
   z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px;
+  background: #ffffff;
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 2px 10px color-mix(in srgb, #2e2b25 8%, transparent);
+}
+/* In-flow inside the top bar now (not fixed). Stays `relative` so the roster
+   popover, which is absolutely positioned, still anchors to it. */
+.member-stack {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;

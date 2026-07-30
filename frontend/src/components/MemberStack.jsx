@@ -17,7 +17,7 @@ export default function MemberStack(props) {
   // The Leave button lives in its own pill beside the stack now, NOT inside the
   // roster popover — so keep onLeave out of what we forward to ParticipantsList.
   const { onLeave, ...rosterProps } = props;
-  const { creatorName, participants, votes, me, vip } = rosterProps;
+  const { creatorName, participants, votes, me, vips } = rosterProps;
 
   const [open, setOpen] = useState(false);
   const rootRef = useRef(null);
@@ -70,7 +70,7 @@ export default function MemberStack(props) {
               key={name}
               name={name}
               isMe={name === me}
-              isVip={vip === name}
+              isVip={vips?.has(name)}
               voted={votes?.[name]?.submitted === true}
             />
           ))}

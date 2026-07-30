@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { ref, onValue, set, update, remove, onDisconnect } from 'firebase/database';
 import { db } from '../firebase.js';
 import { getIdentity, clearIdentity } from '../utils/storage.js';
-import { isRoomClosed, CLOSE_UNLOCK_MS } from '../utils/room.js';
+import { isRoomClosed, CLOSE_UNLOCK_MS, getVipNames } from '../utils/room.js';
 import ErrorBanner from '../components/ErrorBanner.jsx';
 import Countdown from '../components/Countdown.jsx';
 import VotingSection from '../components/VotingSection.jsx';
@@ -22,6 +22,7 @@ import {
   canChangeRole,
 } from '../utils/roles.js';
 import { ROOM_MODE_UI_ENABLED } from '../utils/flags.js';
+import { isValidKey } from '../utils/keys.js';
 
 export default function Room() {
   const { code } = useParams();
@@ -88,6 +89,10 @@ export default function Room() {
   }, [identity, roomLoaded, roomCode]);
 
   const ended = useMemo(() => isRoomClosed(room, now), [room, now]);
+  // The room's VIPs (votes count double). Memoized off `room` so the Set stays
+  // stable across the 1s clock ticks — keeps ResultsSection's useMemo from
+  // recomputing every second.
+  const vips = useMemo(() => getVipNames(room), [room]);
 
   // --- Firebase writes (guarded so a failure shows a banner, never crashes) ---
   async function submitVotes(scores) {
@@ -95,6 +100,7 @@ export default function Room() {
       await set(ref(db, `rooms/${roomCode}/votes/${identity}`), { scores, submitted: true });
     } catch (err) {
       setError(err.message || 'Failed to submit your votes.');
+      throw err; // let VotingSection keep the ballot editable so the user can retry
     }
   }
   async function editVotes(scores) {
@@ -103,6 +109,7 @@ export default function Room() {
       await set(ref(db, `rooms/${roomCode}/votes/${identity}`), { scores, submitted: false });
     } catch (err) {
       setError(err.message || 'Failed to update your votes.');
+      throw err; // let VotingSection stay in its current mode so the user can retry
     }
   }
   async function closePoll() {
@@ -117,12 +124,25 @@ export default function Room() {
     }
   }
 
-  async function setVip(name) {
-    // President-only; `name` is a lowercase participant name, or null to clear.
-    // Room-wide write so the double-weight applies for everyone via onValue.
+  async function addVip(name) {
+    // President-only; `name` is a lowercase participant name. Rooms can have
+    // several VIPs — write into the `vips` map so the double-weight applies for
+    // everyone via onValue. Room-wide, so everyone sees the same weighting.
     if (!canManageRoom(room, identity)) return;
     try {
-      await update(ref(db, `rooms/${roomCode}`), { vip: name });
+      await update(ref(db, `rooms/${roomCode}`), { [`vips/${name}`]: true });
+    } catch (err) {
+      setError(err.message || 'Failed to update the VIP.');
+    }
+  }
+  async function removeVip(name) {
+    // President-only. Drop them from the `vips` map; also clear the legacy single
+    // `vip` field if this room predates the multi-VIP map and it names this person.
+    if (!canManageRoom(room, identity)) return;
+    const updates = { [`vips/${name}`]: null };
+    if (room.vip === name) updates.vip = null;
+    try {
+      await update(ref(db, `rooms/${roomCode}`), updates);
     } catch (err) {
       setError(err.message || 'Failed to update the VIP.');
     }
@@ -202,7 +222,7 @@ export default function Room() {
     for (const raw of labels) {
       const label = (raw || '').trim();
       const key = label.toLowerCase();
-      if (label && !present.has(key)) {
+      if (label && isValidKey(label) && !present.has(key)) {
         present.add(key);
         toAdd.push(label);
       }
@@ -219,22 +239,24 @@ export default function Room() {
     }
   }
   async function removeSuggestion(label) {
-    if (!canEditOptions(room, identity)) return;
+    if (!canEditOptions(room, identity)) return false;
     const key = (label || '').trim().toLowerCase();
     const current = room.options || [];
     const next = current.filter((o) => o.trim().toLowerCase() !== key);
-    if (next.length === current.length) return; // wasn't in the list
+    if (next.length === current.length) return false; // wasn't in the list
     if (next.length < 2) {
       setError('A room needs at least 2 options.');
-      return;
+      return false;
     }
     try {
       await update(ref(db, `rooms/${roomCode}`), {
         options: next,
         optionAuthors: authorsFor(next),
       });
+      return true;
     } catch (err) {
       setError(err.message || 'Failed to remove the option.');
+      return false;
     }
   }
 
@@ -293,7 +315,8 @@ export default function Room() {
   }
 
   const votes = room.votes || {};
-  const remainingMs = Math.max(0, room.expiresAt - now);
+  const expiresAt = Number(room.expiresAt);
+  const remainingMs = Number.isFinite(expiresAt) ? Math.max(0, expiresAt - now) : 0;
   const canCloseAt = room.createdAt + CLOSE_UNLOCK_MS;
   const closeUnlocked = now >= canCloseAt;
   const closeCountdownS = Math.ceil((canCloseAt - now) / 1000);
@@ -308,24 +331,28 @@ export default function Room() {
     <div className="page page--room">
       <ErrorBanner message={error} onDismiss={() => setError('')} />
 
-      {/* Pinned top-right presence indicator; opens the roster as a popover.
-          position:fixed, so it floats over the layout regardless of DOM place. */}
-      <MemberStack
-        creatorName={room.creatorName}
-        participants={room.participants}
-        votes={votes}
-        status={room.status}
-        mode={mode}
-        me={identity}
-        vip={room.vip || null}
-        canManageVip={iAmPresident && !ended}
-        canManageRoles={iAmPresident && !ended}
-        onSetVip={setVip}
-        onCycleRole={cycleRole}
-        onPromotePresident={promoteToPresident}
-        onHoverName={setHoveredName}
-        onLeave={leaveRoom}
-      />
+      {/* Full-width white bar pinned to the top of the page (position:fixed), so
+          it stays put on scroll. Hosts the presence stack + Leave button, right-
+          aligned; the roster opens as a popover under the stack. */}
+      <header className="room-topbar">
+        <MemberStack
+          creatorName={room.creatorName}
+          participants={room.participants}
+          votes={votes}
+          status={room.status}
+          mode={mode}
+          me={identity}
+          vips={vips}
+          canManageVip={iAmPresident && !ended}
+          canManageRoles={iAmPresident && !ended}
+          onAddVip={addVip}
+          onRemoveVip={removeVip}
+          onCycleRole={cycleRole}
+          onPromotePresident={promoteToPresident}
+          onHoverName={setHoveredName}
+          onLeave={leaveRoom}
+        />
+      </header>
 
       <div className="room-layout">
         <div className="room-main">
@@ -395,7 +422,7 @@ export default function Room() {
             ended={ended}
             methodId={methodId}
             onMethodChange={setMethodId}
-            vip={room.vip || null}
+            vips={vips}
             me={identity}
             highlightName={hoveredName}
           />

@@ -43,7 +43,7 @@ a non-interactive `bash -c 'node ...'` may not find `node`. Prefix commands with
 export NVM_DIR=$HOME/.nvm && . "$NVM_DIR/nvm.sh"
 ```
 
-A healthy build currently reports **69 modules, no errors** — keep it clean.
+A healthy build currently reports **70 modules, no errors** — keep it clean.
 
 **Slash commands** (`.claude/commands/`, checked in) wrap the two everyday
 workflows so they run the same way every time:
@@ -94,16 +94,18 @@ frontend/src/              (frontend/ also has index.html, vite.config.js, packa
     Room.jsx               THE hub. One onValue listener = all live state.
                            Holds: room, now (1s tick), copied, methodId (local).
                            Writes: submitVotes/editVotes (set votes/{name}),
-                           closePoll (update closedAt), setMode/setRole/setVip
-                           (roles, president-gated), saveOptions +
+                           closePoll (update closedAt), setMode/setRole +
+                           addVip/removeVip (write vips/{name}, president-gated),
+                           saveOptions +
                            acceptSuggestions/removeSuggestion (write options +
                            optionAuthors via authorsFor()), leaveRoom (drop
                            presence+vote → home). Also hosts <SuggestOptions> for
                            ministers+ (iCanEditOptions). Presence written
                            once on load + removed on unmount/onDisconnect.
-                           Redirects if no identity. Layout: single main
-                           column; the roster is the pinned <MemberStack>
-                           (top-right), not an always-on sidebar.
+                           Redirects if no identity. Layout: a pinned full-width
+                           white bar (.room-topbar) at the top holds the
+                           <MemberStack> (roster + Leave button, right-aligned);
+                           below it a single main column, not an always-on sidebar.
   components/
     CreateRoom.jsx         Create form; validation; collision-checked code; set().
                            Dropdown picks inputMode (the room-mode picker is
@@ -148,7 +150,12 @@ frontend/src/              (frontend/ also has index.html, vite.config.js, packa
                            counting until they resubmit; resubmit (set()) prunes
                            orphaned labels. Self-clears once every option is rated.
     ResultsSection.jsx     Submitted-only averages; ranks via selected method;
-                           bars, winner/tie highlight (label only when ended).
+                           bars + winner/tie highlight. The leader is badged
+                           "Top pick" live and "Winner"/"Tie" once ended (the
+                           label is NOT gated to ended — showing the live leader
+                           is intended). computeResults clamps each score into
+                           [1,10] and skips NaN, so bad DB writes can't break
+                           geomean or push a bar off-scale.
                            Per-voter dots on each bar at that person's score.
                            Coverage caveat: an option rated by fewer submitted
                            voters than voted overall (count < submittedCount) shows
@@ -159,21 +166,31 @@ frontend/src/              (frontend/ also has index.html, vite.config.js, packa
                            Rings: me→ink, vip→gold, voted→sage (voted only passed
                            from roster/stack, never on the bars where all voted).
     Countdown.jsx          Pure mm:ss display; red/urgent under 60s.
-    EvaluatorToggle.jsx    3-button segmented control + per-button tooltips.
-    MemberStack.jsx        Google-Docs-style presence pin (position:fixed, top-
-                           right): up to 3 enlarged VoterDots side by side (no
-                           overlap) + a "+N" chip (4th circle, only when >3
-                           people, N = count-3) + caret. Click any / the caret →
-                           opens ParticipantsList in a popover (click-outside/Esc
-                           to close). Forwards all props EXCEPT onLeave to the
-                           roster; hosts its own red "Leave room" pill beside the
-                           stack. Local `open` only. Replaces the old sidebar.
+    EvaluatorToggle.jsx    Segmented control + per-button tooltips. Filters out
+                           geomean while GEOMEAN_METHOD_ENABLED is false (flags.js),
+                           so it shows 2 buttons today (mean + min), 3 when enabled.
+    MemberStack.jsx        Google-Docs-style presence pin: up to 3 enlarged
+                           VoterDots side by side (no overlap) + a "+N" chip (4th
+                           circle, only when >3 people, N = count-3) + caret. Click
+                           any / the caret → opens ParticipantsList in a popover
+                           (click-outside/Esc to close). Forwards all props EXCEPT
+                           onLeave to the roster; hosts its own red "Leave room"
+                           pill beside the stack. Local `open` only. In-flow
+                           (position:relative) — Room.jsx renders it inside the
+                           pinned .room-topbar (the fixed full-width white bar at
+                           the top of the page), right-aligned. Replaces the old
+                           sidebar.
     ParticipantsList.jsx   Roster (rendered inside the MemberStack popover):
-                           everyone in the room + status tag
-                           (Deciding · Editing · Voted) + role chip.
-                           President-only: draggable VIP badge (drop on a name →
-                           room.vip), click chip to toggle voter⇄minister, 👑 to
-                           promote. (Leave room button lives in MemberStack now.)
+                           everyone in the room + role chip. Voting status is a
+                           small emoji badge in the avatar's bottom-right corner
+                           (💭 Deciding · ✏️ Editing · ✅ Voted), the word on hover
+                           — replaced the old text status pill to de-clutter rows.
+                           President-only VIP (multi): a reusable ★ badge in the
+                           pill drags onto a name to ADD a VIP (onAddVip → vips
+                           map); each VIP's own badge drags back to the pill to
+                           remove just them (onRemoveVip). Click chip to toggle
+                           voter⇄minister, 👑 to promote. (Leave room button lives
+                           in MemberStack now.)
     ErrorBanner.jsx        Dismissible error banner (Firebase failures).
   utils/
     roomCode.js            generateRoomCode() — 6 chars, safe alphabet
@@ -181,6 +198,8 @@ frontend/src/              (frontend/ also has index.html, vite.config.js, packa
                            localStorage fallback. save/get/clearIdentity.
     room.js                isRoomClosed(), formatDuration(), ROOM_TTL_MS,
                            CLOSE_UNLOCK_MS (=3min), getParticipantNames(),
+                           getVipNames(room) → Set of VIP names (reads the vips
+                           map + legacy vip field),
                            unratedOptions(vote, options) → current options the
                            vote has no numeric score for (stale-ballot detection)
     roles.js               ROLES/ROOM_MODES + roleOf(), getMode(), canEditOptions/
@@ -188,7 +207,14 @@ frontend/src/              (frontend/ also has index.html, vite.config.js, packa
                            DEFAULT_ROOM_MODE = 'vote'.
     flags.js               Feature flags. ROOM_MODE_UI_ENABLED (=false) hides the
                            room-mode UI (ModeToggle + create-form picker) without
-                           removing the mode logic; flip to true to restore it.
+                           removing the mode logic. GEOMEAN_METHOD_ENABLED (=false)
+                           hides the "Everyone content" (geomean) button from the
+                           EvaluatorToggle bar; the method stays in METHODS[].
+                           Flip either to true to restore its feature.
+    keys.js                isValidKey() + FORBIDDEN_KEY_HINT. Option labels and
+                           lowercase names are used directly as Firebase keys, so
+                           create/join/edit reject any containing . # $ [ ] /
+                           (RTDB-forbidden) before the write.
     scoring.js             METHODS[] + getMethod() + DEFAULT_METHOD_ID
     inputModes.js          INPUT_MODES[] + getInputMode() + scoreForRank()
                            + DEFAULT_INPUT_MODE_ID
@@ -243,8 +269,10 @@ rooms/
     mode:        'conversation'|'vote'  // conversation = everyone edits options;
                                       // vote = options locked. Absent on old
                                       // rooms -> 'vote'. A president flips it live.
-    vip:         string | null        // lowercase name; president-set. That
-                                      // voter's score counts DOUBLE in results.
+    vips/                             // president-set VIPs; each vote counts
+      {lowercaseName}: true           // DOUBLE in results. A room can have many.
+                                      // (Legacy: an old `vip: string` single
+                                      // field is still read via getVipNames.)
     status/                           // role per person (absent = mode default)
       {lowercaseName}: 'voter'|'minister'|'president'
     participants/                     // presence roster (written on room entry)
@@ -281,6 +309,12 @@ ranking, the winner/tie set, bar widths, and the caption blurb.
 | `geomean` | Everyone content | geometric mean = exp(mean(ln x)) | one low score tanks it → penalizes "great for most, hated by one" |
 | `min`     | No dealbreakers  | minimum score                    | maximin / best worst-case |
 
+- **`geomean` ("Everyone content") is currently hidden** behind
+  `GEOMEAN_METHOD_ENABLED` (`utils/flags.js`, default `false`): `EvaluatorToggle`
+  filters its button out, so viewers only pick `mean` or `min`. The method's
+  `METHODS[]` entry and `compute` are untouched (and VIP weighting still names it),
+  so flipping the flag to `true` brings the button back with no other change.
+
 - The choice is **per-viewer local** (`useState methodId` in `Room.jsx`) — NOT
   written to Firebase, no schema change. Each person explores independently.
 - Winner/tie comparison rounds to **3 decimals** so float dust in a geomean
@@ -289,11 +323,12 @@ ranking, the winner/tie set, bar widths, and the caption blurb.
   focus; the same `blurb` is shown inline for the active method in
   `ResultsSection`. Keep `blurb` the single source of truth — don't duplicate the
   text elsewhere.
-- **VIP weighting:** if `room.vip` is set (**president-only**, via the draggable
-  badge in the roster), that voter's score is pushed into the per-option array
-  **twice** in `computeResults`, doubling its weight for `mean`/`geomean`. `min`
-  is unaffected by design (a worst-case ignores multiplicity). The displayed voter
-  `count` stays unweighted.
+- **VIP weighting:** a room can have **several VIPs** (`room.vips`, **president-
+  only**, via the draggable badge in the roster; read through `getVipNames`, which
+  also folds in the legacy single `vip` field). Each VIP's score is pushed into the
+  per-option array **twice** in `computeResults`, doubling its weight for
+  `mean`/`geomean`. `min` is unaffected by design (a worst-case ignores
+  multiplicity). The displayed voter `count` stays unweighted.
 
 ---
 

@@ -89,7 +89,19 @@ export default function VotingSection({
 
   function moveCard(from, to) {
     setOrder((prev) => {
-      if (from == null || from === to || to < 0 || to >= prev.length) return prev;
+      // Guard both indices: a NaN `from` (e.g. a non-numeric drag payload) passes a
+      // `from == null` check but splice(NaN, …) coerces to 0 and scrambles the order.
+      if (
+        !Number.isInteger(from) ||
+        !Number.isInteger(to) ||
+        from === to ||
+        from < 0 ||
+        from >= prev.length ||
+        to < 0 ||
+        to >= prev.length
+      ) {
+        return prev;
+      }
       const next = [...prev];
       const [moved] = next.splice(from, 1);
       next.splice(to, 0, moved);
@@ -119,6 +131,9 @@ export default function VotingSection({
         await onEdit(payload); // writes submitted: false so it stops counting
         setEditing(true);
       }
+    } catch {
+      // The write failed (Room already surfaced the banner). Stay in the current
+      // mode so the user can retry — never falsely flip the ballot to "saved".
     } finally {
       setBusy(false);
     }
@@ -159,7 +174,10 @@ export default function VotingSection({
                 }}
                 onDrop={(e) => {
                   e.preventDefault();
-                  moveCard(Number(e.dataTransfer.getData('text/plain')), i);
+                  // Only react to a numeric card index — ignore stray payloads like
+                  // the VIP badge's 'vip' or dropped text (which would parse to NaN).
+                  const from = Number.parseInt(e.dataTransfer.getData('text/plain'), 10);
+                  if (Number.isInteger(from)) moveCard(from, i);
                   setDragIndex(null);
                 }}
                 onDragEnd={() => setDragIndex(null)}

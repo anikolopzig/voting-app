@@ -32,13 +32,22 @@ export default function SuggestOptions({ question, existing, onAccept, onRemove 
         existing,
         count,
       });
+      // Dedup by label (case-insensitive) so two identical suggestions can't
+      // collide on the React key or share a single accept/reject decision.
+      const seen = new Set();
+      const unique = suggestions.filter((s) => {
+        const k = (s.label || '').trim().toLowerCase();
+        if (!k || seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
       // A fresh batch starts undecided — the user opts each one in or out.
       setDecisions({});
-      if (!suggestions.length) {
+      if (!unique.length) {
         setResults(null);
         setError('No suggestions came back — try adding a location or a hint.');
       } else {
-        setResults(suggestions);
+        setResults(unique);
       }
     } catch (err) {
       setResults(null);
@@ -55,9 +64,15 @@ export default function SuggestOptions({ question, existing, onAccept, onRemove 
     setDecisions((d) => ({ ...d, [label]: 'accepted' }));
   }
   // Reject: mark it out, and if it had been accepted, pull it back out of options.
-  function reject(label) {
+  // Only mark rejected once the removal actually succeeds — the in-room host can
+  // refuse (e.g. it would drop below 2 options), and marking it rejected anyway
+  // would leave the option live on the ballot while the UI showed it skipped.
+  async function reject(label) {
     if (decisions[label] === 'rejected') return;
-    if (decisions[label] === 'accepted') onRemove?.(label);
+    if (decisions[label] === 'accepted') {
+      const ok = await onRemove?.(label);
+      if (ok === false) return; // couldn't remove — keep it shown as accepted
+    }
     setDecisions((d) => ({ ...d, [label]: 'rejected' }));
   }
 

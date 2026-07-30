@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { ref, get } from 'firebase/database';
 import { db } from '../firebase.js';
 import { saveIdentity } from '../utils/storage.js';
-import { isRoomClosed } from '../utils/room.js';
+import { isRoomClosed, getParticipantNames } from '../utils/room.js';
+import { isValidKey, FORBIDDEN_KEY_HINT } from '../utils/keys.js';
 
 export default function JoinRoom({ onError, initialName = '' }) {
   const [code, setCode] = useState('');
@@ -37,9 +38,13 @@ export default function JoinRoom({ onError, initialName = '' }) {
       }
 
       const lowerName = trimmedName.toLowerCase();
-      const voterNames = Object.keys(room.votes || {});
-      // The creator's name is reserved even before they cast a vote.
-      if (lowerName === room.creatorName || voterNames.includes(lowerName)) {
+      if (!isValidKey(lowerName)) {
+        setBusy(false);
+        return setLocalError(`Your name can’t contain any of these characters: ${FORBIDDEN_KEY_HINT}`);
+      }
+      // Reserve any name already in the room — creator, present-but-not-voted, or
+      // voted — not just names that already have a vote entry.
+      if (getParticipantNames(room).includes(lowerName)) {
         setBusy(false);
         return setLocalError('That name is already taken in this room.');
       }

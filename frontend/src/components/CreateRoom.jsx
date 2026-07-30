@@ -8,6 +8,7 @@ import { ROOM_TTL_MS } from '../utils/room.js';
 import { INPUT_MODES, DEFAULT_INPUT_MODE_ID, getInputMode } from '../utils/inputModes.js';
 import { ROOM_MODES, DEFAULT_ROOM_MODE, MODE_META } from '../utils/roles.js';
 import { ROOM_MODE_UI_ENABLED } from '../utils/flags.js';
+import { isValidKey, FORBIDDEN_KEY_HINT } from '../utils/keys.js';
 import SuggestOptions from './SuggestOptions.jsx';
 
 // Try a handful of random codes, checking each for collisions, before giving up.
@@ -52,7 +53,7 @@ export default function CreateRoom({ onError, initialName = '' }) {
       for (const raw of labels) {
         const label = (raw || '').trim();
         const key = label.toLowerCase();
-        if (label && !present.has(key)) {
+        if (label && isValidKey(label) && !present.has(key)) {
           present.add(key);
           incoming.push(label);
         }
@@ -84,6 +85,7 @@ export default function CreateRoom({ onError, initialName = '' }) {
       while (next.length < 2) next.push('');
       return next;
     });
+    return true; // this host always removes — shares SuggestOptions' onRemove contract
   }
 
   async function handleSubmit(e) {
@@ -95,6 +97,9 @@ export default function CreateRoom({ onError, initialName = '' }) {
     const trimmedOptions = options.map((o) => o.trim()).filter(Boolean);
 
     if (!trimmedName) return setLocalError('Please enter your name.');
+    if (!isValidKey(trimmedName.toLowerCase())) {
+      return setLocalError(`Your name can’t contain any of these characters: ${FORBIDDEN_KEY_HINT}`);
+    }
     if (!trimmedQuestion) return setLocalError('Please enter a question.');
     if (trimmedOptions.length < 2) return setLocalError('Please enter at least 2 options.');
 
@@ -102,6 +107,13 @@ export default function CreateRoom({ onError, initialName = '' }) {
     const lowered = trimmedOptions.map((o) => o.toLowerCase());
     if (new Set(lowered).size !== lowered.length) {
       return setLocalError('Options must be unique.');
+    }
+
+    // Option labels are used directly as Firebase keys (optionAuthors[label] and
+    // each vote's scores[label]), so reject any that isn't a legal key.
+    const badOption = trimmedOptions.find((o) => !isValidKey(o));
+    if (badOption) {
+      return setLocalError(`Options can’t contain any of these characters: ${FORBIDDEN_KEY_HINT}`);
     }
 
     setBusy(true);

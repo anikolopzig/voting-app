@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { isValidKey, FORBIDDEN_KEY_HINT } from '../utils/keys.js';
 
 // Live editor for the room's shared option list, shown to anyone who may edit
 // (ministers + presidents; see canEditOptions). Edits stay local until "Update
@@ -46,6 +47,11 @@ export default function OptionsEditor({ options, onSave }) {
     if (trimmed.length < 2) return setLocalError('Please keep at least 2 options.');
     if (new Set(lowered).size !== lowered.length) {
       return setLocalError('Options must be unique.');
+    }
+    // Labels become Firebase keys (optionAuthors[label], each vote's scores[label]).
+    const badOption = trimmed.find((o) => !isValidKey(o));
+    if (badOption) {
+      return setLocalError(`Options can’t contain any of these characters: ${FORBIDDEN_KEY_HINT}`);
     }
     setBusy(true);
     try {

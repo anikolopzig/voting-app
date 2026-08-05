@@ -512,6 +512,19 @@ re-derive role rules in components.
   emulator** (:9099) handles sign-up; run it with `--only auth,functions` so the
   function trusts its tokens. Voting itself uses no auth (name-per-room identity in
   `utils/storage.js`).
+- **Verification-email deliverability is a known weak spot.** Prod uses Firebase's
+  built-in sender (`noreply@groupvote-12796.firebaseapp.com`), which is
+  *best-effort*: with no custom SMTP and no domain reputation, Gmail often delays
+  the mail by minutes or drops it silently — "not in spam" doesn't mean it was
+  delivered. Firebase also **rate-limits OOB sends** per account/recipient; too
+  many `sendEmailVerification` calls return HTTP **400 `TOO_MANY_ATTEMPTS_TRY_LATER`**
+  (`auth/too-many-requests`), and the throttle can suppress delivery for ~an hour.
+  Mitigations in code: `AuthForm`'s "Resend email" button has a **30s client
+  cooldown** (`cooldown` state) so it can't be hammered into that throttle, plus a
+  prod-only "check spam/Promotions, can take a few minutes" note. **Reliable
+  delivery is not code-fixable** — it needs custom SMTP in Authentication →
+  Templates, or relaxing `REQUIRE_EMAIL_VERIFICATION`/`EMAIL_VERIFICATION_REQUIRED`
+  to accept any signed-in account.
 
 ## Testing & verification
 

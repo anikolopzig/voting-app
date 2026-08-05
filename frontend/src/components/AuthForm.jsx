@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '../auth/AuthProvider.jsx';
 import { auth } from '../firebase.js';
 import { REQUIRE_EMAIL_VERIFICATION } from '../utils/flags.js';
@@ -56,6 +56,18 @@ export default function AuthForm({ prompt = 'Sign in to use AI suggestions', def
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  // Client-side cooldown on "Resend email". Firebase throttles OOB (verification)
+  // sends per account/recipient and answers a too-frequent request with HTTP 400
+  // (TOO_MANY_ATTEMPTS_TRY_LATER). Spamming the button is exactly how a user trips
+  // that, so we gate it locally: after a send, count down before it's clickable
+  // again. Purely UX — it can't lift Firebase's own (longer) throttle once hit.
+  const [cooldown, setCooldown] = useState(0);
+  const cooling = cooldown > 0;
+  useEffect(() => {
+    if (!cooling) return undefined;
+    const id = setInterval(() => setCooldown((c) => (c <= 1 ? 0 : c - 1)), 1000);
+    return () => clearInterval(id);
+  }, [cooling]);
 
   // Small async wrapper: reset messages, flip busy, surface any auth/* error.
   async function run(fn, successNotice) {
@@ -91,6 +103,20 @@ export default function AuthForm({ prompt = 'Sign in to use AI suggestions', def
     }
   }
 
+  // Resend the verification email, then start the local cooldown so the button
+  // can't be hammered into Firebase's own throttle. Cooldown starts up-front (not
+  // on success) so even a failed/rate-limited attempt still blocks rapid retries.
+  function handleResend() {
+    if (busy || cooling) return;
+    setCooldown(30);
+    run(
+      sendVerification,
+      import.meta.env.DEV
+        ? 'New link generated — see the emulator logs.'
+        : 'Verification email sent. It can take a few minutes — check spam and Promotions too.',
+    );
+  }
+
   // DEV convenience: apply the emulator's pending verification link, then refresh
   // so emailVerified flips and the AI panel unlocks.
   async function handleDevVerify() {
@@ -121,10 +147,16 @@ export default function AuthForm({ prompt = 'Sign in to use AI suggestions', def
           You’re signed in as <strong>{user.email}</strong>. One more step — verify your email
           to unlock AI suggestions.
         </p>
-        {import.meta.env.DEV && (
+        {import.meta.env.DEV ? (
           <p className="section-note auth-dev-note">
             Dev mode: no real email is sent. The verification link is printed in the emulator
             logs (and the Emulator UI at :4000) — or just click “⚡ Verify now (dev)”.
+          </p>
+        ) : (
+          <p className="section-note">
+            The email can take a few minutes to arrive — check your spam and Promotions folders.
+            Requesting it repeatedly gets temporarily blocked by Firebase, so give it a moment
+            before resending.
           </p>
         )}
         {error && <p className="inline-error">{error}</p>}
@@ -136,17 +168,10 @@ export default function AuthForm({ prompt = 'Sign in to use AI suggestions', def
           <button
             type="button"
             className="btn btn--ghost"
-            disabled={busy}
-            onClick={() =>
-              run(
-                sendVerification,
-                import.meta.env.DEV
-                  ? 'New link generated — see the emulator logs.'
-                  : 'Verification email resent.',
-              )
-            }
+            disabled={busy || cooling}
+            onClick={handleResend}
           >
-            Resend email
+            {cooling ? `Resend in ${cooldown}s` : 'Resend email'}
           </button>
         </div>
         {import.meta.env.DEV && (
@@ -175,8 +200,12 @@ export default function AuthForm({ prompt = 'Sign in to use AI suggestions', def
     );
   }
 
-  function handleSubmit(e) {
-    e.preventDefault();
+  // NOT a <form>: AuthForm is embedded inside other forms (e.g. CreateRoom), and
+  // nested <form> elements are invalid HTML — the inner submit button would submit
+  // the OUTER form and sign-in would silently never run. So submit is a plain
+  // button, with Enter-to-submit wired on the fields.
+  function submit() {
+    if (busy || !email.trim() || !password) return;
     if (mode === 'signup') {
       run(
         () => signUp(email.trim(), password),
@@ -186,9 +215,15 @@ export default function AuthForm({ prompt = 'Sign in to use AI suggestions', def
       run(() => signIn(email.trim(), password));
     }
   }
+  function onFieldKeyDown(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      submit();
+    }
+  }
 
   return (
-    <form className="card panel auth-card" onSubmit={handleSubmit}>
+    <div className="card panel auth-card">
       <div className="suggest__head">
         <span className="field__label suggest__title">
           {mode === 'signup' ? 'Create an account' : 'Sign in'}
@@ -213,6 +248,7 @@ export default function AuthForm({ prompt = 'Sign in to use AI suggestions', def
           value={email}
           placeholder="you@example.com"
           onChange={(e) => setEmail(e.target.value)}
+          onKeyDown={onFieldKeyDown}
         />
       </label>
 
@@ -225,6 +261,7 @@ export default function AuthForm({ prompt = 'Sign in to use AI suggestions', def
           value={password}
           placeholder="••••••••"
           onChange={(e) => setPassword(e.target.value)}
+          onKeyDown={onFieldKeyDown}
         />
       </label>
 
@@ -232,9 +269,10 @@ export default function AuthForm({ prompt = 'Sign in to use AI suggestions', def
       {notice && <p className="section-note">{notice}</p>}
 
       <button
-        type="submit"
+        type="button"
         className="btn btn--primary btn--block"
         disabled={busy || !email.trim() || !password}
+        onClick={submit}
       >
         {busy ? 'Working…' : mode === 'signup' ? 'Sign up' : 'Sign in'}
       </button>
@@ -249,6 +287,6 @@ export default function AuthForm({ prompt = 'Sign in to use AI suggestions', def
       >
         {mode === 'signup' ? 'Have an account? Sign in' : 'New here? Create an account'}
       </button>
-    </form>
+    </div>
   );
 }

@@ -7,9 +7,11 @@ import { saveIdentity } from '../utils/storage.js';
 import { ROOM_TTL_MS } from '../utils/room.js';
 import { INPUT_MODES, DEFAULT_INPUT_MODE_ID, getInputMode } from '../utils/inputModes.js';
 import { ROOM_MODES, DEFAULT_ROOM_MODE, MODE_META } from '../utils/roles.js';
-import { ROOM_MODE_UI_ENABLED } from '../utils/flags.js';
+import { ROOM_MODE_UI_ENABLED, REQUIRE_EMAIL_VERIFICATION } from '../utils/flags.js';
 import { isValidKey, FORBIDDEN_KEY_HINT } from '../utils/keys.js';
 import SuggestOptions from './SuggestOptions.jsx';
+import AuthForm from './AuthForm.jsx';
+import { useAuth } from '../auth/AuthProvider.jsx';
 
 // Try a handful of random codes, checking each for collisions, before giving up.
 async function reserveUniqueCode() {
@@ -30,6 +32,10 @@ export default function CreateRoom({ onError, initialName = '' }) {
   const [localError, setLocalError] = useState('');
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
+  // Auth gates AI suggestions only — creating a room and typing options never
+  // needs an account (voting stays account-free).
+  const { user, authReady } = useAuth();
+  const canUseAI = authReady && !!user && (!REQUIRE_EMAIL_VERIFICATION || user.emailVerified);
 
   function updateOption(index, value) {
     setOptions((opts) => opts.map((o, i) => (i === index ? value : o)));
@@ -207,12 +213,16 @@ export default function CreateRoom({ onError, initialName = '' }) {
         </button>
 
         <div className="suggest-slot">
-          <SuggestOptions
-            question={question}
-            existing={options.map((o) => o.trim()).filter(Boolean)}
-            onAccept={acceptSuggestions}
-            onRemove={removeSuggestion}
-          />
+          {canUseAI ? (
+            <SuggestOptions
+              question={question}
+              existing={options.map((o) => o.trim()).filter(Boolean)}
+              onAccept={acceptSuggestions}
+              onRemove={removeSuggestion}
+            />
+          ) : (
+            <AuthForm prompt="Sign in to use AI suggestions" />
+          )}
         </div>
       </div>
 

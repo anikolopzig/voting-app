@@ -53,6 +53,9 @@ curl -s -o /dev/null -w "%{http_code}\n" https://groupvote-12796.web.app/api/sug
    (cd frontend && npm install)
    (cd backend  && npm install)
    ```
+6. **Enable Email/Password auth** (for AI suggestions — voting stays account-free).
+   Firebase Console → Authentication → Sign-in method → enable **Email/Password**.
+   The auth emulator needs no console config; this is only for the deployed site.
 
 ---
 
@@ -61,15 +64,23 @@ curl -s -o /dev/null -w "%{http_code}\n" https://groupvote-12796.web.app/api/sug
 Two terminals:
 
 ```bash
-# terminal 1 — from repo ROOT: serves /api/suggest on :5001
-firebase emulators:start --only functions
+# terminal 1 — from repo ROOT: Functions (/api/suggest on :5001) + Auth (:9099)
+firebase emulators:start --only auth,functions
 
 # terminal 2 — the client on :5173, proxying /api/suggest to the emulator
 cd frontend && npm run dev
 ```
 
 Open http://localhost:5173. `frontend/vite.config.js` proxies `/api/suggest` to the
-emulator, so dev behaves like prod.
+functions emulator, so dev behaves like prod.
+
+**Why both emulators:** AI suggestions are gated behind a Firebase Auth account
+(voting is not), and `/api/suggest` **verifies the caller's ID token**. Starting
+Auth + Functions *together* auto-wires `FIREBASE_AUTH_EMULATOR_HOST` so the
+function trusts emulator-issued tokens; the client points at the auth emulator via
+`connectAuthEmulator` in `src/firebase.js` (dev only). Sign up with any email in
+the emulator — verification links print to the **emulator logs / Emulator UI**, no
+real inbox needed. Start functions alone and every suggestion request 401s.
 
 **Test the function directly** (no browser, no emulator):
 
@@ -110,8 +121,13 @@ curl -s -o /dev/null -w "deep link:   %{http_code}\n" "$BASE/room/TEST12" # 200 
 curl -s -o /dev/null -w "api GET:     %{http_code}\n" "$BASE/api/suggest" # 405 (function live)
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"question":"Coffee?","location":"Athens","count":3}' \
-  -w "\napi POST:    %{http_code}\n" "$BASE/api/suggest"                  # 200 + suggestions
+  -w "\napi POST:    %{http_code}\n" "$BASE/api/suggest"                  # 401 (no auth token)
 ```
+
+The `api POST` check now returns **401** — the endpoint requires a Firebase Auth
+ID token, so `curl` without one is correctly rejected (that's the point). To smoke
+the full suggestions path, sign in on the live site and use the in-app "✨ Suggest
+options" panel; the browser attaches the `Authorization: Bearer …` token.
 
 ---
 
@@ -144,11 +160,13 @@ curl -s -X POST -H 'Content-Type: application/json' \
    mode".** These need a real terminal (browser/prompt). → Run them in your own
    terminal, not through a piped/embedded shell.
 
-6. **Emulator warns "requires the module firebase-admin".** Non-fatal — the
-   function runs and deploys fine without it (our function has no DB access). → To
-   silence it, add `"firebase-admin": "^12.0.0"` to `backend/package.json` and
-   `cd backend && npm install`. Do **not** treat this warning as the cause of a
-   failed deploy.
+6. **`Cannot find module 'firebase-admin'` / suggestions 401 even when signed in.**
+   `firebase-admin` is now a **real dependency** — the function uses it to verify
+   the caller's Auth ID token. → `cd backend && npm install` (it's in
+   `backend/package.json`). If a signed-in user still gets 401 locally, you started
+   the functions emulator **without** auth (`--only functions`): use
+   `--only auth,functions` so `FIREBASE_AUTH_EMULATOR_HOST` is wired and the
+   function trusts emulator tokens.
 
 7. **`node: command not found` in a script.** nvm only loads in interactive
    shells. → Prefix: `export NVM_DIR=$HOME/.nvm && . "$NVM_DIR/nvm.sh"`.
@@ -174,12 +192,22 @@ curl -s -X POST -H 'Content-Type: application/json' \
     expire ~2026-08-21 (`"now < 1787284800000"`). → Tighten/renew the rules in
     Realtime Database → Rules before then.
 
+13. **`@firebase/database: ... credentials ... are invalid` + writes hang (room
+    stuck on "Creating…") after signing in locally.** The Auth *emulator* token
+    was riding on Realtime Database requests, but the DB is the real
+    (non-emulated) prod RTDB, which can't verify an emulator token. → Fixed in
+    `src/firebase.js`: Auth runs on a **separate** Firebase app instance so its
+    token never attaches to DB writes (voting is account-free). If you see this
+    again, make sure nothing calls `getAuth()` on the same app as `getDatabase()`.
+
 ---
 
 ## Costs & abuse
 
 - **Gemini** calls bill to your Google AI Studio credits; flash-lite is cheap and
   each suggestion is one grounded call.
-- The `/api/suggest` endpoint is public (only an Origin allowlist guards it). If
-  abuse becomes a concern, add **Firebase App Check** — see `CLAUDE.md` →
-  Extending.
+- The `/api/suggest` endpoint now **requires a verified-email Firebase Auth token**
+  (`backend/index.js`), so anonymous scripts can't burn quota — that's the primary
+  abuse control. Still deferred: **per-account/IP rate limiting** (one scripted
+  account can loop) — see `CLAUDE.md` → Extending and
+  `~/.claude/plans/vivid-baking-babbage.md`.

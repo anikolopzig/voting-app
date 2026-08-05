@@ -323,12 +323,97 @@ h6 {
   z-index: 50;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 8px;
   padding: 10px 16px;
   background: #ffffff;
   border-bottom: 1px solid var(--border);
   box-shadow: 0 2px 10px color-mix(in srgb, #2e2b25 8%, transparent);
+}
+/* Far-LEFT account chip: "User: guest" vs "User: email". The only always-on cue
+   of sign-in state (auth just gates AI). Click opens the account menu below it. */
+.auth-pill-wrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+.auth-pill {
+  padding: 9px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-weight: 700;
+  font-size: 0.85rem;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.auth-pill:hover {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev));
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+/* Laconic Gmail-style account menu, anchored under the pill (left-aligned). */
+.auth-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  width: min(300px, calc(100vw - 24px));
+  padding: 14px 16px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+.auth-menu__head {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.auth-menu__email {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+  color: var(--muted);
+  text-align: center;
+}
+.auth-menu__head .icon-btn {
+  flex: 0 0 auto;
+}
+.auth-menu__avatar {
+  width: 64px;
+  height: 64px;
+  margin: 4px auto 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff8f2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 1.7rem;
+  line-height: 1;
+}
+.auth-menu__avatar--guest {
+  background: color-mix(in srgb, var(--muted) 30%, var(--bg-elev));
+  color: var(--muted);
+}
+.auth-menu__greeting {
+  margin: 0 0 12px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text);
+}
+/* The reused AuthForm sits flush inside the menu — drop its top margin/elevation. */
+.auth-menu .auth-card {
+  margin-top: 0;
+  text-align: left;
 }
 /* In-flow inside the top bar now (not fixed). Stays `relative` so the roster
    popover, which is absolutely positioned, still anchors to it. */
@@ -583,6 +668,33 @@ select.input option {
 /* ---------- AI suggestion panel (create form) ---------- */
 .suggest-slot {
   margin-top: 10px;
+}
+/* Inline sign-in card shown in place of the AI panel when the viewer isn't
+   signed in — mirrors .suggest so the two swap seamlessly in the same slot. */
+.auth-card {
+  margin-top: 10px;
+  padding: 16px;
+  background: var(--bg-elev);
+}
+.auth-card .field {
+  margin-bottom: 12px;
+}
+.auth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 10px;
+}
+.auth-actions .btn {
+  flex: 1 1 auto;
+}
+/* Dev-only hint on the verify card (emulator sends no real email). */
+.auth-dev-note {
+  font-size: 12px;
+  font-style: italic;
+  opacity: 0.85;
+  border-left: 2px solid var(--accent);
+  padding-left: 8px;
 }
 /* Nested card sits on the elevated background so it reads as a sub-panel. */
 .suggest {

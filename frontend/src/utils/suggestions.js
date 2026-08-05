@@ -5,12 +5,17 @@
 //
 // Returns an array of { label, why }, or throws an Error whose message is safe to
 // show the user.
-export async function requestSuggestions({ question, location, hint, existing, count }) {
+export async function requestSuggestions({ question, location, hint, existing, count, idToken }) {
+  // The endpoint requires a Firebase Auth ID token (AI suggestions are gated
+  // behind an account; voting is not). The caller passes the token; we forward it
+  // as a Bearer credential the Cloud Function verifies server-side.
+  const headers = { 'Content-Type': 'application/json' };
+  if (idToken) headers.Authorization = `Bearer ${idToken}`;
   let res;
   try {
     res = await fetch('/api/suggest', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({
         question,
         location: location || '',

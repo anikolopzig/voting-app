@@ -64,3 +64,150 @@ already voted.
 ✅ FIXED (#15) frontend/src/pages/Room.jsx + utils/room.js — remainingMs = Math.max(0, room.expiresAt - now); the 0-floor does not guard NaN — Math.max(0, NaN) returns NaN — so a missing/non-numeric expiresAt propagates NaN into the countdown. → isRoomClosed treats a malformed expiresAt as closed; remainingMs guards with Number.isFinite (falls back to 0).
 ---
 
+## Room page UX review (2026-08-04)
+
+Walk-through of `/room/:code` looking for changes that make the experience
+better. Grouped by priority; each item states the problem (with the code it
+lives in), why it matters, and the proposed change. Nothing here is implemented
+yet — these are proposals, not decisions.
+
+Theme of the P0s: the page currently **loses work, loses time, and loses
+people**.
+
+### P0 — Real losses today
+
+- [ ] **P0-1 · A shared room link dead-ends.** `Room.jsx:44-46` — opening
+  `/room/ABC123` without an identity does `navigate('/', { replace: true })`,
+  which drops the code. The invited person lands on an empty join form and has
+  to ask for the code again. Compounding it, `copyCode` (`Room.jsx:282`) copies
+  only the 6 characters, so sharing is manual either way.
+  → Copy an **invite link** (`/room/CODE`) instead of / alongside the bare code,
+  and make the no-identity redirect **carry the code to Home** so `JoinRoom`
+  pre-fills it and only the name is left to type. **Effort: S.** Biggest funnel
+  leak on the page.
+
+- [ ] **P0-2 · Editing options wipes everyone's in-progress ballot.**
+  `Room.jsx:406` remounts `VotingSection` via `key={room.options.join('|')}`,
+  and the component seeds its state once at mount (`VotingSection.jsx:63-64`)
+  from `myVote` — which is `null` for anyone who hasn't submitted yet. So the
+  moment any minister adds or renames an option, every voter mid-slide snaps
+  back to the default 5s, silently. The stale-ballot nudge covers people who
+  *had* submitted; this is the opposite case and is uncovered.
+  → Drop the remount key and **reconcile in a `useEffect`**: keep existing local
+  scores, seed only newly added labels, drop removed ones. **Effort: M.**
+  NOTE: this is the same refactor as deferred code-review findings **#5 and
+  #11** — ready-to-apply steps already written up in
+  [FIXPLAN.md](FIXPLAN.md) (#11 also fixes the `'|'`-in-a-label signature
+  collision, so do them together).
+
+- [ ] **P0-3 · "Leave room" is irreversible and unconfirmed.** `leaveRoom`
+  (`Room.jsx:263`) deletes presence **and the person's submitted vote**, then
+  clears their identity — one click, no confirmation, from a red pill sitting
+  right next to the roster caret in the pinned topbar. `closePoll` and
+  `promoteToPresident` both confirm, and this is more destructive than either.
+  → Add a confirm that names the consequence ("your vote will be removed").
+  **Effort: S.** (Related: deferred #6/#9 — leaving also leaves a dangling
+  `status/{name}` override and VIP pointer behind.)
+
+### P1 — The 15-minute clock
+
+- [ ] **P1-4 · The countdown scrolls away.** It lives in `.room-header`
+  (`Room.jsx:374`) while the topbar is the thing that's pinned — so the most
+  time-critical fact on the page is the first to disappear. Same for the code
+  chip: sharing with a late joiner means scrolling back up.
+  → Move a compact **countdown + "3/5 voted" + code chip** into the pinned
+  `.room-topbar`. **Effort: M** (mostly CSS). Side benefit: the topbar starts
+  carrying room context instead of only presence.
+
+- [ ] **P1-5 · No warning, then a hard stop.** Expiry flips `VotingSection`
+  straight to "🔒 Voting has ended" (`VotingSection.jsx:74`), and `Countdown`
+  only turns red under 60s (`Countdown.jsx:6`). Anyone still editing loses an
+  unsubmitted ballot with no notice.
+  → Warn at **T-2min**, and make it *specific* for people whose ballot isn't
+  submitted ("your votes aren't counted yet"). **Effort: S.**
+
+- [ ] **P1-6 · No way to extend the room.** `expiresAt` is only ever read
+  client-side (`room.js:6-12`), so nothing stops a president writing a later
+  value.
+  → President-only **"+5 minutes"** beside Close Poll. **Effort: S.** Today a
+  group that hits the buzzer mid-discussion has to abandon the room and retype
+  the whole question + option set.
+
+- [ ] **P1-7 · Close Poll is locked for 3 minutes even when everyone is done.**
+  `Room.jsx:320-321` is a pure time gate (`CLOSE_UNLOCK_MS`).
+  → Unlock early once **every participant has submitted** (keep the 3-min floor
+  otherwise), and surface an "everyone's voted" moment so the room has a natural
+  point of closure. **Effort: S.**
+
+### P2 — Hierarchy and the ending
+
+- [ ] **P2-8 · Ministers/presidents get the ballot pushed below the fold.**
+  `OptionsEditor` and `SuggestOptions` both render expanded, above
+  `VotingSection` (`Room.jsx:391-402`). On mobile a president scrolls past two
+  editing cards to reach the thing the room exists for.
+  → Collapse `OptionsEditor` behind a disclosure, matching how `SuggestOptions`
+  already behaves. **Effort: S.**
+
+- [ ] **P2-9 · The room ends with nowhere to go.** Once ended there's no summary
+  framing and no next step — to run another round the group must leave, create a
+  room, and retype the question and every option.
+  → An ended banner that states the outcome, plus **"Run this vote again"**
+  pre-filling `/create` with the same question + options (Home→Create already
+  hands off state this way). **Effort: M.**
+
+### Deliberately NOT changing
+
+Per-viewer evaluator method (not synced), the live "Top pick" badge,
+caveat-only partial coverage (flag it, don't re-rank), name-hashed participant
+colors, lowercase-everywhere keys, and guarded writes → `ErrorBanner`. All are
+existing intentional decisions — see CLAUDE.md.
+
+### Suggested order
+
+P0-1 → P0-3 → P0-2 (roughly half the value; only P0-2 is non-trivial, and it
+retires two deferred findings), then P1-4…P1-7 as one "clock" batch, then P2.
+Each item is independently shippable. CLAUDE.md gets updated in the same change,
+per the repo's own rule.
+
+---
+
+## Auth sign-up / sign-in feedback — silent rejections (2026-08-04)
+
+Observed while testing the AI-suggestions sign-in gate: creating an account and
+signing in gave **no visible success or failure** — the AI panel just stayed
+locked with no message, so a failed attempt, a successful-but-unverified one, and
+a plain no-op all looked identical. (Root cause of the "no email ever arrives"
+part was separately the Auth *emulator*, which only logs verification links — see
+`RUNBOOK.md` pitfall #13 and the dev-verify tooling below.)
+
+**Addressed this session** (`AuthForm.jsx` / `AuthPill.jsx`):
+- All `auth/*` errors now surface via `messageFor()` (wrong password, email in
+  use, weak password, invalid email, network, too-many-requests).
+- The signed-in-but-unverified state is now an explicit "You're signed in as X —
+  one more step" verify card instead of a silent locked panel.
+- "I've verified — refresh" now reports back when you're *still* unverified
+  instead of doing nothing.
+- Dev-mode note + "⚡ Verify now (dev)" so the emulator's no-real-email behavior
+  isn't mistaken for a failure.
+
+**Still open (residual silent / ambiguous paths):**
+- [ ] **Sign-up success is implicit.** On success `createUserWithEmailAndPassword`
+  immediately signs the user in, so the form re-renders into the verify card
+  before the "Account created" notice is guaranteed to show — positive
+  confirmation rides on the card swap, which a user may not read as "it worked."
+  Want a persistent, unmissable success state.
+- [ ] **create-succeeds / verify-send-fails edge.** If the create call succeeds
+  but the following `sendEmailVerification` throws (rate limit / network), the
+  account exists and the user is signed in, yet an *error* is shown — mixed
+  signals. Decide: retry the send, or show "account created, but we couldn't send
+  the link — Resend."
+- [ ] **Prod verification-email non-delivery is unsurfaced.** Live (not the
+  emulator), a real email can be spam-filtered or dropped; the UI just waits with
+  no delivery confirmation and no "didn't get it?" guidance beyond Resend.
+- [ ] **No client-side pre-checks.** Obvious rejections (password < 6 chars,
+  malformed email) round-trip to Firebase instead of showing instantly. Cheap
+  inline validation would make the rejection feel immediate rather than "silent
+  then a beat later."
+
+---
+

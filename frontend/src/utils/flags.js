@@ -14,3 +14,10 @@ export const ROOM_MODE_UI_ENABLED = false;
 // with its compute intact — nothing is deleted, and getMethod still resolves it
 // — so flipping this back to true restores the button immediately.
 export const GEOMEAN_METHOD_ENABLED = false;
+
+// AI suggestions require a signed-in account (voting never does). When true, that
+// account must also have a VERIFIED email before the suggestions UI unlocks — so
+// "sign up" proves the user controls a real inbox. When false, any signed-in user
+// qualifies. ⚠️ Must match EMAIL_VERIFICATION_REQUIRED in backend/index.js: the
+// function enforces the same rule server-side (this flag only gates the UI).
+export const REQUIRE_EMAIL_VERIFICATION = true;

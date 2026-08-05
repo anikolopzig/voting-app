@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { requestSuggestions } from '../utils/suggestions.js';
+import { useAuth } from '../auth/AuthProvider.jsx';
 
 // Collapsible "let AI suggest options" panel, rendered inside the CreateRoom form.
 // Covers both cases through one request: with a location + hint and no typed
@@ -9,6 +10,7 @@ import { requestSuggestions } from '../utils/suggestions.js';
 // label up via onAccept (CreateRoom places it: blank rows first, never
 // overwriting text); rejecting an already-accepted one pulls it back via onRemove.
 export default function SuggestOptions({ question, existing, onAccept, onRemove }) {
+  const { user } = useAuth(); // present only because the parent gated us behind sign-in
   const [open, setOpen] = useState(false);
   const [location, setLocation] = useState('');
   const [hint, setHint] = useState('');
@@ -25,12 +27,16 @@ export default function SuggestOptions({ question, existing, onAccept, onRemove 
     setError('');
     setBusy(true);
     try {
+      // Fresh ID token for the Bearer credential the function verifies. getIdToken
+      // auto-refreshes if it's near expiry, so it never sends a stale token.
+      const idToken = user ? await user.getIdToken() : null;
       const suggestions = await requestSuggestions({
         question: question.trim(),
         location: location.trim(),
         hint: hint.trim(),
         existing,
         count,
+        idToken,
       });
       // Dedup by label (case-insensitive) so two identical suggestions can't
       // collide on the React key or share a single accept/reject decision.

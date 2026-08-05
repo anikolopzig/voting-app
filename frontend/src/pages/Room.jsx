@@ -9,9 +9,12 @@ import Countdown from '../components/Countdown.jsx';
 import VotingSection from '../components/VotingSection.jsx';
 import ResultsSection from '../components/ResultsSection.jsx';
 import MemberStack from '../components/MemberStack.jsx';
+import AuthPill from '../components/AuthPill.jsx';
 import ModeToggle from '../components/ModeToggle.jsx';
 import OptionsEditor from '../components/OptionsEditor.jsx';
 import SuggestOptions from '../components/SuggestOptions.jsx';
+import AuthForm from '../components/AuthForm.jsx';
+import { useAuth } from '../auth/AuthProvider.jsx';
 import { DEFAULT_METHOD_ID } from '../utils/scoring.js';
 import {
   getMode,
@@ -21,7 +24,7 @@ import {
   canEditOptions,
   canChangeRole,
 } from '../utils/roles.js';
-import { ROOM_MODE_UI_ENABLED } from '../utils/flags.js';
+import { ROOM_MODE_UI_ENABLED, REQUIRE_EMAIL_VERIFICATION } from '../utils/flags.js';
 import { isValidKey } from '../utils/keys.js';
 
 export default function Room() {
@@ -29,6 +32,9 @@ export default function Room() {
   const roomCode = (code || '').toUpperCase();
   const navigate = useNavigate();
   const identity = getIdentity(roomCode); // lowercase name, or null
+  // Auth is SEPARATE from voting identity: it only unlocks AI suggestions.
+  const { user, authReady } = useAuth();
+  const canUseAI = authReady && !!user && (!REQUIRE_EMAIL_VERIFICATION || user.emailVerified);
 
   const [room, setRoom] = useState(undefined); // undefined = loading, null = missing
   const [error, setError] = useState('');
@@ -335,6 +341,7 @@ export default function Room() {
           it stays put on scroll. Hosts the presence stack + Leave button, right-
           aligned; the roster opens as a popover under the stack. */}
       <header className="room-topbar">
+        <AuthPill />
         <MemberStack
           creatorName={room.creatorName}
           participants={room.participants}
@@ -391,15 +398,21 @@ export default function Room() {
           {iCanEditOptions && <OptionsEditor options={room.options} onSave={saveOptions} />}
 
           {/* AI option suggestions, offered to anyone who may edit options
-              (ministers + presidents) — voters don't see it, same as the editor. */}
-          {iCanEditOptions && (
-            <SuggestOptions
-              question={room.question}
-              existing={room.options}
-              onAccept={acceptSuggestions}
-              onRemove={removeSuggestion}
-            />
-          )}
+              (ministers + presidents) — voters don't see it, same as the editor.
+              Gated behind sign-in: signed-in-and-verified editors get the panel;
+              others get the inline sign-in affordance in its place (voting itself
+              still needs no account). */}
+          {iCanEditOptions &&
+            (canUseAI ? (
+              <SuggestOptions
+                question={room.question}
+                existing={room.options}
+                onAccept={acceptSuggestions}
+                onRemove={removeSuggestion}
+              />
+            ) : (
+              <AuthForm prompt="Sign in to use AI suggestions" />
+            ))}
 
           {/* key remounts the voter UI if the option set ever changes */}
           <VotingSection

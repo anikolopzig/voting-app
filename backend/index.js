@@ -5,16 +5,31 @@
 
 import { onRequest } from 'firebase-functions/v2/https';
 import { defineSecret } from 'firebase-functions/params';
+import { initializeApp, getApps } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
 import { callGemini } from './suggest.js';
 
 // Bound at deploy time; set with `firebase functions:secrets:set GEMINI_API_KEY`.
 const geminiKey = defineSecret('GEMINI_API_KEY');
 
+// Admin SDK — used only to verify the caller's Firebase Auth ID token (below).
+// No credentials needed: it uses the function's own service account (and the
+// auth emulator locally, via FIREBASE_AUTH_EMULATOR_HOST). Guard against a
+// double init on hot reload.
+if (!getApps().length) initializeApp();
+
+// The AI-suggestions feature is gated behind a Firebase Auth account (VOTING
+// stays account-free). Require a *verified* email so "sign up" proves the caller
+// controls a real inbox — flip to false to accept any signed-in user. Keep this
+// in sync with REQUIRE_EMAIL_VERIFICATION in frontend/src/utils/flags.js.
+const EMAIL_VERIFICATION_REQUIRED = true;
+
 // Same-origin in prod (Hosting rewrite) and dev (Vite proxy adds no cross-origin),
 // so a real browser request carries one of these Origins. A missing Origin (curl,
 // server-to-server) is allowed so the endpoint stays testable; a present-but-
-// unknown Origin is rejected as a cheap deterrent. Real abuse protection is
-// Firebase App Check — a documented follow-up, not built here.
+// unknown Origin is rejected as a cheap deterrent. This is NOT the real access
+// control — the Origin header is client-spoofable. The real gate is the Firebase
+// Auth ID-token check in handler() below (a signed token can't be forged).
 const ALLOWED_ORIGINS = new Set([
   'https://groupvote-12796.web.app',
   'https://groupvote-12796.firebaseapp.com',
@@ -68,6 +83,28 @@ async function handler(req, res) {
   }
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Use POST.' });
+    return;
+  }
+
+  // Require a signed-in caller. Verifying the ID token here — not merely hiding
+  // the button in the UI — is what actually closes the open endpoint: unlike the
+  // Origin header, a Firebase-signed token can't be forged by a stray script.
+  // Kept in its own try/catch so a bad token yields 401, not the 502 fallback.
+  const authHeader = req.get('authorization') || '';
+  const bearer = authHeader.match(/^Bearer (.+)$/i);
+  if (!bearer) {
+    res.status(401).json({ error: 'Sign in to use AI suggestions.' });
+    return;
+  }
+  let decoded;
+  try {
+    decoded = await getAuth().verifyIdToken(bearer[1]);
+  } catch {
+    res.status(401).json({ error: 'Your session has expired — sign in again.' });
+    return;
+  }
+  if (EMAIL_VERIFICATION_REQUIRED && !decoded.email_verified) {
+    res.status(403).json({ error: 'Verify your email to use AI suggestions.' });
     return;
   }
 

@@ -33,7 +33,7 @@ The repo is split into **`frontend/`** (the Vite app — run `npm` here) and
 | `npm run dev` | `frontend/` | Vite dev server → http://localhost:5173 (HMR) |
 | `npm run build` | `frontend/` | Production build; outputs `frontend/dist/` |
 | `npm run preview` | `frontend/` | Serve the built `frontend/dist/` locally |
-| `firebase emulators:start --only functions` | root | Local `/api/suggest` function; run alongside `npm run dev` (Vite proxies to it) |
+| `firebase emulators:start --only auth,functions` | root | Local `/api/suggest` function (:5001) + Auth emulator (:9099); run alongside `npm run dev` (Vite proxies to it). Both are needed — the function verifies the caller's Auth token, and running them together auto-wires `FIREBASE_AUTH_EMULATOR_HOST`. |
 | `firebase deploy` | root | Deploy Hosting (`frontend/dist/`) + the Cloud Function together |
 
 **Node:** v20.15.1 via **nvm**. ⚠️ nvm only loads in interactive/login shells, so
@@ -43,14 +43,14 @@ a non-interactive `bash -c 'node ...'` may not find `node`. Prefix commands with
 export NVM_DIR=$HOME/.nvm && . "$NVM_DIR/nvm.sh"
 ```
 
-A healthy build currently reports **70 modules, no errors** — keep it clean.
+A healthy build currently reports **76 modules, no errors** — keep it clean.
 
 **Slash commands** (`.claude/commands/`, checked in) wrap the two everyday
 workflows so they run the same way every time:
 
 | Command | Does |
 |---------|------|
-| `/launch-local` | Starts the functions emulator + Vite dev server in the background → http://localhost:5173. Skips the emulator (with a warning) if `backend/.secret.local` is missing. |
+| `/launch-local` | Starts the Auth + Functions emulators + Vite dev server in the background → http://localhost:5173. Skips the emulators (with a warning) if `backend/.secret.local` is missing. |
 | `/build-deploy` | Builds `frontend/`, then `firebase deploy` (Hosting + function), then smoke-tests the live site. **Stops without deploying if the build fails** — deploy publishes whatever is in `frontend/dist/`. |
 
 Both defer to `RUNBOOK.md` for the underlying steps and its symptom→cause→fix
@@ -80,10 +80,22 @@ Function); `firebase.json`/`.firebaserc` sit at the repo root.
 
 ```
 frontend/src/              (frontend/ also has index.html, vite.config.js, package.json)
-  main.jsx                 React root + BrowserRouter + global.css
+  main.jsx                 React root + <AuthProvider> + BrowserRouter + global.css
   App.jsx                  Routes: "/" Home (Landing), "/create" Create,
                            "/room/:code" Room, "*" -> "/"
-  firebase.js              initializeApp + getDatabase(db) from VITE_ env vars
+  firebase.js              initializeApp + getDatabase(db) from VITE_ env vars.
+                           getAuth(auth) runs on a SEPARATE app instance ('auth')
+                           so a signed-in user's token never rides on DB writes —
+                           voting is account-free and the real RTDB would reject a
+                           dev Auth-emulator token ("credentials invalid"), hanging
+                           every write. Keep Auth off the db app. In DEV,
+                           connectAuthEmulator(:9099) on that auth app.
+  auth/
+    AuthProvider.jsx       React context for Firebase Auth — ONLY gates AI
+                           suggestions, never voting. useAuth() exposes {user,
+                           authReady, signIn/signUp/signOutUser, sendVerification,
+                           refreshUser}. Reads auth.currentUser fresh per render so
+                           an emailVerified change (after refreshUser) propagates.
   pages/
     Home.jsx               Landing (design 2a): join-focused. Brand + <JoinRoom>
                            card + an "or" divider + a "Start a new vote" button →
@@ -179,7 +191,19 @@ frontend/src/              (frontend/ also has index.html, vite.config.js, packa
                            (position:relative) — Room.jsx renders it inside the
                            pinned .room-topbar (the fixed full-width white bar at
                            the top of the page), right-aligned. Replaces the old
-                           sidebar.
+                           sidebar. The <AuthPill> sits to its right (far right of
+                           the bar).
+    AuthPill.jsx           Far-LEFT account chip in the .room-topbar showing sign-in
+                           state — "User: guest" (anonymous voter) vs "User: <email>"
+                           (signed-in account), collapsed to ≤11 chars (slice(0,11)+
+                           "..."; "User: guest" is exactly 11 so it shows whole).
+                           Auth only gates AI suggestions, so this is the one
+                           always-visible cue of who you are + the place to sign
+                           in/out. Click opens a laconic Gmail-style account menu
+                           (click-outside/Esc to close): avatar (initial, or a guest
+                           glyph) + email + greeting, then "Sign out" when verified,
+                           else the reused <AuthForm defaultOpen> (guest → sign-in
+                           form; unverified → verify card). Uses useAuth().
     ParticipantsList.jsx   Roster (rendered inside the MemberStack popover):
                            everyone in the room + role chip. Voting status is a
                            small emoji badge in the avatar's bottom-right corner
@@ -192,6 +216,15 @@ frontend/src/              (frontend/ also has index.html, vite.config.js, packa
                            voter⇄minister, 👑 to promote. (Leave room button lives
                            in MemberStack now.)
     ErrorBanner.jsx        Dismissible error banner (Firebase failures).
+    AuthForm.jsx           Inline sign-in / sign-up / verify-email card, shown IN
+                           PLACE OF <SuggestOptions> when the viewer isn't signed
+                           in (or unverified) — signing in IS the action, so we
+                           offer it rather than hiding it. Collapses to a "🔒 Sign
+                           in to use AI suggestions" button (pass defaultOpen to
+                           start expanded, as <AuthPill>'s menu does); on success the
+                           parent swaps it for the panel. Also reused inside the
+                           <AuthPill> account menu. Uses useAuth(); voting never
+                           routes through here.
   utils/
     roomCode.js            generateRoomCode() — 6 chars, safe alphabet
     storage.js             identity map {ROOMCODE: lowercasename}, session-first +
@@ -210,7 +243,9 @@ frontend/src/              (frontend/ also has index.html, vite.config.js, packa
                            removing the mode logic. GEOMEAN_METHOD_ENABLED (=false)
                            hides the "Everyone content" (geomean) button from the
                            EvaluatorToggle bar; the method stays in METHODS[].
-                           Flip either to true to restore its feature.
+                           REQUIRE_EMAIL_VERIFICATION (=true) makes AI suggestions
+                           require a VERIFIED-email account (must match the same
+                           const in backend/index.js). Flip any to true/false.
     keys.js                isValidKey() + FORBIDDEN_KEY_HINT. Option labels and
                            lowercase names are used directly as Firebase keys, so
                            create/join/edit reject any containing . # $ [ ] /
@@ -219,7 +254,9 @@ frontend/src/              (frontend/ also has index.html, vite.config.js, packa
     inputModes.js          INPUT_MODES[] + getInputMode() + scoreForRank()
                            + DEFAULT_INPUT_MODE_ID
     participantColor.js    PARTICIPANT_COLORS + colorForName() + initialFor()
-    suggestions.js         requestSuggestions() — POSTs /api/suggest, returns
+    suggestions.js         requestSuggestions({..., idToken}) — POSTs /api/suggest
+                           with an `Authorization: Bearer <idToken>` header (the
+                           endpoint requires a Firebase Auth token); returns
                            [{label, why}] or throws a user-readable Error.
   styles/global.css        One stylesheet. Light "Organic" theme (warm cream),
                            mobile-first, CSS vars. Accent = terracotta --accent
@@ -231,13 +268,27 @@ frontend/src/              (frontend/ also has index.html, vite.config.js, packa
 backend/                   The ONLY server-side code. Firebase Cloud Function (v2,
                            Node 20, ESM). Exists to hold the Gemini API key
                            server-side; no voting logic here, no DB access.
-  package.json             deps: @google/genai, firebase-functions.
+  package.json             deps: @google/genai, firebase-admin, firebase-functions.
   index.js                 onRequest handler `suggestOptions`: Origin allowlist,
-                           request validation, error → HTTP mapping. Key via
-                           defineSecret('GEMINI_API_KEY').
+                           then **Firebase Auth ID-token verification** (Bearer
+                           header → firebase-admin getAuth().verifyIdToken; 401 if
+                           missing/invalid, 403 if EMAIL_VERIFICATION_REQUIRED and
+                           the email isn't verified — its own try/catch, before the
+                           Gemini one), request validation, error → HTTP mapping.
+                           Key via defineSecret('GEMINI_API_KEY'); no secret needed
+                           for auth (Admin SDK uses the service account / the auth
+                           emulator).
   suggest.js               Pure buildPrompt() + callGemini() (no firebase import;
                            runnable as `node suggest.js "..."`). Model + Google
-                           Search grounding details live here.
+                           Search grounding details live here. PROMPT-INJECTION
+                           HARDENING: every untrusted field is sanitized
+                           (sanitizeField: strips control chars/<>/backticks,
+                           single-lines, clamps) and fenced in a <tag>, with a
+                           system "treat tag/web content as untrusted data" clause
+                           + a trailing re-assertion of the JSON contract;
+                           parseSuggestions cleans, rejects labels that aren't
+                           valid Firebase keys (FORBIDDEN_KEY_RE mirrors
+                           utils/keys.js), de-dupes, and caps to count.
 firebase.json              Hosting (public frontend/dist/) + rewrites: /api/** →
                            function BEFORE the ** SPA catch-all (order matters).
                            functions.source = backend/.
@@ -454,6 +505,13 @@ re-derive role rules in components.
   key is a **Firebase secret** (`firebase functions:secrets:set GEMINI_API_KEY`),
   NOT a `VITE_` var — never expose it to the browser. Emulator reads it from
   `backend/.secret.local` (gitignored).
+- **Auth (Email/Password) gates AI suggestions only.** Enable the **Email/Password**
+  provider in the console (Authentication → Sign-in method) for the live site;
+  `suggestOptions` verifies the caller's ID token via `firebase-admin` (no extra
+  secret — the Admin SDK uses the function's service account). Locally the **auth
+  emulator** (:9099) handles sign-up; run it with `--only auth,functions` so the
+  function trusts its tokens. Voting itself uses no auth (name-per-room identity in
+  `utils/storage.js`).
 
 ## Testing & verification
 
@@ -548,14 +606,41 @@ Provider: **Google Gemini** via the `@google/genai` SDK, a flash-lite model
   force a schema and ground in the same call. We instruct the JSON shape in the
   system prompt and parse defensively instead (`parseSuggestions`). If you ever
   drop grounding, JSON mode would remove the parse step — verify empirically.
+- **Prompt-injection hardening (zero added latency).** All four user fields
+  (`question`, `location`, `hint`, `existing`) are untrusted free text. `buildPrompt`
+  runs each through `sanitizeField` (drop control chars / `<` `>` / backticks,
+  collapse to one line, clamp) and wraps it in a `<tag>`; the system prompt marks
+  tag + web-search content as *data, never instructions*; and the JSON contract is
+  re-asserted as the last user line (instruction sandwiching). `parseSuggestions`
+  then cleans each field to a single line, drops labels that aren't valid Firebase
+  keys (`FORBIDDEN_KEY_RE`, mirroring `utils/keys.js`), de-dupes case-insensitively,
+  and caps the list to `count`. This defends the *in-app* injection path; the
+  *open-endpoint* abuse path is separate — see the endpoint access-control note below.
 - **Model id is a guess-and-verify constant.** `MODEL` in `suggest.js` defaults to
   the `gemini-flash-lite-latest` alias; confirm the exact id against
   <https://ai.google.dev/gemini-api/docs/models>. A model-not-found error is a
   one-line fix there.
 
-To change the model, edit `MODEL` in `suggest.js`. Follow-up worth doing:
-**Firebase App Check** to stop randoms from spending your Gemini quota via the
-public `/api/suggest` endpoint (today it only has an Origin allowlist).
+To change the model, edit `MODEL` in `suggest.js`.
+
+**Endpoint access control (done — auth gate).** `/api/suggest` now **requires a
+verified-email Firebase Auth ID token**: `backend/index.js` verifies the
+`Authorization: Bearer` token with `firebase-admin` (401 missing/invalid, 403
+unverified) before any work, so anonymous scripts can't spend your Gemini quota.
+A signed token can't be forged the way the Origin header can — the Origin
+allowlist is now just a cheap extra deterrent, not the real lock. In the UI, AI
+suggestions are gated behind sign-in (`AuthForm` replaces `SuggestOptions` until
+signed-in-and-verified); **voting stays account-free** and never touches auth.
+Toggle the verified-email requirement via `EMAIL_VERIFICATION_REQUIRED`
+(`backend/index.js`) + `REQUIRE_EMAIL_VERIFICATION` (`utils/flags.js`) — keep them
+in sync. To enable this in prod, turn on the **Email/Password** provider in the
+Firebase console (see `RUNBOOK.md` → One-time setup).
+
+**Still deferred (endpoint abuse):** per-account / per-IP **rate limiting** (a
+scripted verified account can still loop) and — now largely redundant given the
+token — tightening the Origin gate. **Firebase App Check** is superseded for this
+app by the auth requirement (keep it in mind only if an anonymous flow is ever
+added). Full write-up: `~/.claude/plans/vivid-baking-babbage.md`.
 
 ### Other open ideas
 

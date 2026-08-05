@@ -3,6 +3,7 @@ import { getMethod } from '../utils/scoring.js';
 import { getParticipantNames } from '../utils/room.js';
 import VoterDot from './VoterDot.jsx';
 import EvaluatorToggle from './EvaluatorToggle.jsx';
+import OptionDetails, { useOpenDetails, ShowAllDetails } from './OptionDetails.jsx';
 
 // Compute a per-option value with the chosen method, over ONLY submitted votes,
 // sorted descending. All methods return a 1–10 value so bars stay comparable.
@@ -62,8 +63,13 @@ export default function ResultsSection({
   vips,
   me,
   highlightName,
+  optionMeta,
 }) {
   const method = getMethod(methodId);
+  // Expanded details here — independent of the ballot's own toggles, so opening
+  // one section doesn't shift the other under you.
+  const details = useOpenDetails();
+  const detailed = (options || []).filter((opt) => optionMeta?.[opt]);
   const { rows, submittedCount } = useMemo(
     () => computeResults(options, votes, method, vips),
     [options, votes, method, vips]
@@ -118,6 +124,8 @@ export default function ResultsSection({
         </p>
       )}
 
+      <ShowAllDetails labels={detailed} view={details} />
+
       {submittedCount === 0 ? (
         <p className="empty-note">No votes yet.</p>
       ) : (
@@ -138,8 +146,23 @@ export default function ResultsSection({
                       {ended ? (isTie ? 'Tie' : 'Winner') : 'Top pick'}
                     </span>
                   )}
+                  {optionMeta?.[r.opt] && (
+                    <button
+                      type="button"
+                      className={`option-info${details.isOpen(r.opt) ? ' is-open' : ''}`}
+                      onClick={() => details.toggle(r.opt)}
+                      aria-expanded={details.isOpen(r.opt)}
+                      aria-label={`${details.isOpen(r.opt) ? 'Hide' : 'Show'} details for ${r.opt}`}
+                      title={details.isOpen(r.opt) ? 'Hide details' : 'Show details'}
+                    >
+                      ⓘ
+                    </button>
+                  )}
                   <span className="result-row__avg">{r.value.toFixed(1)}</span>
                 </div>
+                {/* Sits above the bar so the winner's website/map are the first
+                    thing you reach for once the group has decided. */}
+                {details.isOpen(r.opt) && <OptionDetails detail={optionMeta?.[r.opt]} />}
                 <div className="bar-wrap">
                   <div className="bar-track">
                     <div

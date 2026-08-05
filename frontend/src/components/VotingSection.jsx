@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { getInputMode, scoreForRank } from '../utils/inputModes.js';
 import { unratedOptions } from '../utils/room.js';
 import VoterDot from './VoterDot.jsx';
+import OptionDetails, { useOpenDetails, ShowAllDetails } from './OptionDetails.jsx';
 
 const DEFAULT_SCORE = 5;
 const MIN = 1;
@@ -39,11 +40,29 @@ function initOrder(options, myVote) {
   return [...options].sort((a, b) => (stored[b] ?? 0) - (stored[a] ?? 0));
 }
 
+// The ⓘ button that reveals an option's AI-researched detail. Rendered only when
+// there IS a detail, so an option nobody expanded looks exactly as it always has.
+function DetailToggle({ option, open, onToggle }) {
+  return (
+    <button
+      type="button"
+      className={`option-info${open ? ' is-open' : ''}`}
+      onClick={() => onToggle(option)}
+      aria-expanded={open}
+      aria-label={`${open ? 'Hide' : 'Show'} details for ${option}`}
+      title={open ? 'Hide details' : 'Show details'}
+    >
+      ⓘ
+    </button>
+  );
+}
+
 // `key` on the parent remounts this component if the option set ever changes,
 // so we can safely seed state once from props at mount.
 export default function VotingSection({
   options,
   optionAuthors,
+  optionMeta,
   me,
   myVote,
   ended,
@@ -63,6 +82,10 @@ export default function VotingSection({
   const [scores, setScores] = useState(() => initScores(options, myVote));
   const [order, setOrder] = useState(() => initOrder(options, myVote));
   const [dragIndex, setDragIndex] = useState(null);
+  // Expanded details. Survives details arriving, because the parent's remount key
+  // is built from the option LABELS only, and expanding writes no options.
+  const details = useOpenDetails();
+  const detailed = options.filter((opt) => optionMeta?.[opt]);
   // Editing when the user has not yet submitted; after submit we lock the input.
   // A stale ballot auto-unlocks so they can rate the new option(s) and resubmit
   // (this is local only — their existing submitted scores keep counting until
@@ -150,6 +173,8 @@ export default function VotingSection({
         )}
       </div>
 
+      <ShowAllDetails labels={detailed} view={details} />
+
       {isRank ? (
         <>
           <p className="section-note voting__hint">
@@ -186,6 +211,13 @@ export default function VotingSection({
                 <span className="rank-card__pos">{i + 1}</span>
                 <span className="rank-card__name">{opt}</span>
                 {unratedSet.has(opt) && <span className="option-new-flag">New</span>}
+                {optionMeta?.[opt] && (
+                  <DetailToggle
+                    option={opt}
+                    open={details.isOpen(opt)}
+                    onToggle={details.toggle}
+                  />
+                )}
                 <span className="rank-card__score">
                   {scoreForRank(i + 1, order.length).toFixed(1)}
                 </span>
@@ -211,6 +243,8 @@ export default function VotingSection({
                     ▼
                   </button>
                 </span>
+                {/* Wraps onto its own full-width line (see .rank-card in global.css). */}
+                {details.isOpen(opt) && <OptionDetails detail={optionMeta?.[opt]} />}
               </li>
             ))}
           </ol>
@@ -230,10 +264,19 @@ export default function VotingSection({
                 <div className="slider-row__head">
                   <span className="slider-row__label">{opt}</span>
                   {unratedSet.has(opt) && <span className="option-new-flag">New</span>}
+                  {optionMeta?.[opt] && (
+                    <DetailToggle
+                      option={opt}
+                      open={details.isOpen(opt)}
+                      onToggle={details.toggle}
+                    />
+                  )}
                   <span className="score-bubble">
                     {mode.step < 1 ? val.toFixed(1) : val}
                   </span>
                 </div>
+                {/* .slider-row is already a flex column, so this just flows in. */}
+                {details.isOpen(opt) && <OptionDetails detail={optionMeta?.[opt]} />}
                 <input
                   className="slider"
                   type="range"

@@ -13,6 +13,7 @@ import AuthPill from '../components/AuthPill.jsx';
 import ModeToggle from '../components/ModeToggle.jsx';
 import OptionsEditor from '../components/OptionsEditor.jsx';
 import SuggestOptions from '../components/SuggestOptions.jsx';
+import ExpandOptions from '../components/ExpandOptions.jsx';
 import AuthForm from '../components/AuthForm.jsx';
 import { useAuth } from '../auth/AuthProvider.jsx';
 import { DEFAULT_METHOD_ID } from '../utils/scoring.js';
@@ -24,8 +25,14 @@ import {
   canEditOptions,
   canChangeRole,
 } from '../utils/roles.js';
-import { ROOM_MODE_UI_ENABLED, REQUIRE_EMAIL_VERIFICATION } from '../utils/flags.js';
+import {
+  ROOM_MODE_UI_ENABLED,
+  REQUIRE_EMAIL_VERIFICATION,
+  OPTION_DETAILS_ENABLED,
+  STANDALONE_EXPAND_ENABLED,
+} from '../utils/flags.js';
 import { isValidKey } from '../utils/keys.js';
+import { sanitizeMetaMap } from '../utils/optionMeta.js';
 
 export default function Room() {
   const { code } = useParams();
@@ -45,6 +52,9 @@ export default function Room() {
   // Roster name being hovered; lifted here so the sidebar can highlight that
   // person's vote dots over in the results column. Local, never persisted.
   const [hoveredName, setHoveredName] = useState(null);
+  // Shared by BOTH AI panels — they ask for the same location, so typing it in
+  // one must fill it in the other. Local only, never written to the room.
+  const [aiLocation, setAiLocation] = useState('');
 
   // Someone opened the URL without joining -> send them home to join properly.
   useEffect(() => {
@@ -99,6 +109,14 @@ export default function Room() {
   // stable across the 1s clock ticks — keeps ResultsSection's useMemo from
   // recomputing every second.
   const vips = useMemo(() => getVipNames(room), [room]);
+  // AI option details, sanitized ONCE here so no component ever touches the raw
+  // node. The RTDB rules are open, so anyone with the room code can write
+  // whatever they like to optionMeta — this is the trust boundary, not the Cloud
+  // Function. Also drops meta for labels that are no longer options.
+  const optionMeta = useMemo(
+    () => (OPTION_DETAILS_ENABLED ? sanitizeMetaMap(room?.optionMeta, room?.options) : null),
+    [room?.optionMeta, room?.options],
+  );
 
   // --- Firebase writes (guarded so a failure shows a banner, never crashes) ---
   async function submitVotes(scores) {
@@ -205,22 +223,62 @@ export default function Room() {
     return authors;
   }
 
+  // Same idea for AI details: surviving labels keep theirs, removed ones drop
+  // out. Returns null when the room has no details at all, so we omit the key
+  // entirely rather than writing an empty node onto a room that never had one.
+  // NOTE a rename loses an option's details — exactly as it already loses that
+  // option's author and everyone's scores, since the label IS the key.
+  function metaFor(nextOptions) {
+    const prev = room.optionMeta;
+    if (!prev) return null;
+    const meta = {};
+    for (const label of nextOptions) if (prev[label]) meta[label] = prev[label];
+    return meta;
+  }
+
   async function saveOptions(nextOptions) {
     if (!canEditOptions(room, identity)) return;
     try {
-      await update(ref(db, `rooms/${roomCode}`), {
+      const updates = {
         options: nextOptions,
         optionAuthors: authorsFor(nextOptions),
-      });
+      };
+      const meta = metaFor(nextOptions);
+      if (meta) updates.optionMeta = meta;
+      await update(ref(db, `rooms/${roomCode}`), updates);
     } catch (err) {
       setError(err.message || 'Failed to update the options.');
+    }
+  }
+
+  // Attach AI-researched detail to options that already exist. Writes ONLY
+  // optionMeta/{label} paths — never `options` — so the ballot does not remount
+  // (VotingSection is keyed on room.options.join('|')) and nobody loses the
+  // slider positions they were part-way through setting.
+  async function applyOptionDetails(detailsByLabel) {
+    if (!canEditOptions(room, identity)) return false;
+    const live = new Set(room.options || []);
+    const updates = {};
+    for (const [label, detail] of Object.entries(detailsByLabel)) {
+      // An option removed while the request was in flight must not come back.
+      if (live.has(label)) updates[`optionMeta/${label}`] = detail;
+    }
+    if (!Object.keys(updates).length) return false;
+    try {
+      await update(ref(db, `rooms/${roomCode}`), updates);
+      return true;
+    } catch (err) {
+      setError(err.message || 'Failed to save the option details.');
+      return false;
     }
   }
 
   // AI suggestions, in-room: accepting appends the new labels (crediting the
   // person who accepted); rejecting one they'd accepted pulls it back out.
   // Same capability gate as manual editing — only ministers+ ever see the panel.
-  async function acceptSuggestions(labels) {
+  // `detailsByLabel` is optional: present when the suggestion was expanded before
+  // being accepted, so its researched detail lands with it in one write.
+  async function acceptSuggestions(labels, detailsByLabel) {
     if (!canEditOptions(room, identity)) return;
     const current = room.options || [];
     const present = new Set(current.map((o) => o.trim().toLowerCase()));
@@ -236,10 +294,17 @@ export default function Room() {
     if (!toAdd.length) return; // all duplicates — nothing to write
     const next = [...current, ...toAdd];
     try {
-      await update(ref(db, `rooms/${roomCode}`), {
+      const updates = {
         options: next,
         optionAuthors: authorsFor(next),
-      });
+      };
+      // Path-scoped, so this only ADDS meta for the new labels and leaves every
+      // existing entry alone. Mixing these with a whole-object `optionMeta` key
+      // in the same call is not allowed — RTDB rejects overlapping paths.
+      for (const label of toAdd) {
+        if (detailsByLabel?.[label]) updates[`optionMeta/${label}`] = detailsByLabel[label];
+      }
+      await update(ref(db, `rooms/${roomCode}`), updates);
     } catch (err) {
       setError(err.message || 'Failed to add the option.');
     }
@@ -255,10 +320,13 @@ export default function Room() {
       return false;
     }
     try {
-      await update(ref(db, `rooms/${roomCode}`), {
+      const updates = {
         options: next,
         optionAuthors: authorsFor(next),
-      });
+      };
+      const meta = metaFor(next);
+      if (meta) updates.optionMeta = meta;
+      await update(ref(db, `rooms/${roomCode}`), updates);
       return true;
     } catch (err) {
       setError(err.message || 'Failed to remove the option.');
@@ -395,30 +463,55 @@ export default function Room() {
               No `key` here: it must NOT share VotingSection's option-set key, or
               the two siblings collide and React duplicates/drops them. The editor
               re-seeds itself from props via an effect instead. */}
-          {iCanEditOptions && <OptionsEditor options={room.options} onSave={saveOptions} />}
+          {/* Both AI panels live INSIDE the editor, in a row with "+ Add option",
+              so every way of adding or enriching an option is in one place.
+              Offered to anyone who may edit options (ministers + presidents) —
+              voters see neither, same as the editor itself. Gated behind sign-in:
+              verified editors get the panels, others get the inline sign-in
+              affordance in place of the first (voting still needs no account).
+              "Expand with AI" has no AuthForm fallback of its own — one sign-in
+              card is enough, and we hide controls a member can't use. */}
+          {iCanEditOptions && (
+            <OptionsEditor
+              options={room.options}
+              onSave={saveOptions}
+              optionMeta={optionMeta}
+              actions={
+                <>
+                  {canUseAI ? (
+                    <SuggestOptions
+                      question={room.question}
+                      existing={room.options}
+                      onAccept={acceptSuggestions}
+                      onRemove={removeSuggestion}
+                      location={aiLocation}
+                      onLocationChange={setAiLocation}
+                    />
+                  ) : (
+                    <AuthForm prompt="Sign in to use AI suggestions" />
+                  )}
+                  {OPTION_DETAILS_ENABLED && STANDALONE_EXPAND_ENABLED && canUseAI && !ended && (
+                    <ExpandOptions
+                      question={room.question}
+                      options={room.options}
+                      onDetails={applyOptionDetails}
+                      location={aiLocation}
+                      onLocationChange={setAiLocation}
+                    />
+                  )}
+                </>
+              }
+            />
+          )}
 
-          {/* AI option suggestions, offered to anyone who may edit options
-              (ministers + presidents) — voters don't see it, same as the editor.
-              Gated behind sign-in: signed-in-and-verified editors get the panel;
-              others get the inline sign-in affordance in its place (voting itself
-              still needs no account). */}
-          {iCanEditOptions &&
-            (canUseAI ? (
-              <SuggestOptions
-                question={room.question}
-                existing={room.options}
-                onAccept={acceptSuggestions}
-                onRemove={removeSuggestion}
-              />
-            ) : (
-              <AuthForm prompt="Sign in to use AI suggestions" />
-            ))}
-
-          {/* key remounts the voter UI if the option set ever changes */}
+          {/* key remounts the voter UI if the option set ever changes. Note that
+              expanding details writes only optionMeta/*, so it deliberately does
+              NOT remount and does not disturb an in-progress ballot. */}
           <VotingSection
             key={room.options.join('|')}
             options={room.options}
             optionAuthors={room.optionAuthors || null}
+            optionMeta={optionMeta}
             me={identity}
             myVote={myVote}
             ended={ended}
@@ -438,6 +531,7 @@ export default function Room() {
             vips={vips}
             me={identity}
             highlightName={hoveredName}
+            optionMeta={optionMeta}
           />
 
           {iAmPresident && !ended && (

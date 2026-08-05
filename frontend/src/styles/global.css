@@ -641,9 +641,31 @@ select.input option {
   display: flex;
   gap: 8px;
   align-items: center;
+  /* Wraps so an expanded .option-detail drops onto its own full-width line
+     under the input + ⓘ + ✕ row. */
+  flex-wrap: wrap;
 }
 .option-row .input {
   flex: 1;
+}
+.option-row .option-detail {
+  flex: 1 0 100%;
+}
+/* "+ Add option" alongside the AI panels. While they're collapsed they're just
+   ghost buttons and sit in the row; when one opens, its panel takes a full-width
+   line below (the rule beneath), so the row never has to hold a whole card. */
+.options-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.options-actions > .suggest,
+.options-actions > .expand,
+.options-actions > .auth-card {
+  flex: 1 0 100%;
+  margin-top: 0;
 }
 /* Circular position badge in front of each option row (create screen). */
 .option-num {
@@ -665,10 +687,7 @@ select.input option {
   margin: 4px 0 12px;
 }
 
-/* ---------- AI suggestion panel (create form) ---------- */
-.suggest-slot {
-  margin-top: 10px;
-}
+/* ---------- AI suggestion panel ---------- */
 /* Inline sign-in card shown in place of the AI panel when the viewer isn't
    signed in — mirrors .suggest so the two swap seamlessly in the same slot. */
 .auth-card {
@@ -813,6 +832,142 @@ select.input option {
   background: var(--danger);
   border-color: var(--danger);
   color: #fff;
+}
+
+/* ---------- AI option details ("expand with AI") ---------- */
+/* The ✨ panel. Mirrors .suggest so the two read as siblings, but it is NOT a
+   .card — ministers already stack the options editor + suggestion panel above
+   the ballot, and a third card would push voting below the fold. */
+.expand {
+  margin-top: 10px;
+  padding: 16px;
+  background: var(--bg-elev);
+  border-radius: var(--radius);
+}
+.expand__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.expand__title {
+  margin-bottom: 0;
+  color: var(--text);
+  font-weight: 700;
+}
+
+/* The ⓘ toggle that reveals an option's detail. Sized down from .suggest__vote so
+   it sits inside a row without crowding the label or the score bubble.
+   It renders ONLY when details exist, so its mere presence is the signal — hence
+   it's accent-tinted at rest rather than muted, which would read as disabled.
+   Identical on every surface (create form, options editor, ballot, results) so
+   "this option has details" always looks the same. */
+.option-info {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  font-size: 0.85rem;
+  font-weight: 800;
+  line-height: 1;
+  border-radius: 999px;
+  border: 1px solid var(--accent-200);
+  background: var(--accent-soft);
+  color: var(--accent-700);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.option-info:hover {
+  border-color: var(--accent);
+}
+.option-info.is-open {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff8f2;
+}
+
+/* "Show all option details" — sits above an option list. Smaller than a normal
+   ghost button so it reads as a view control, not a primary action, and carries
+   the accent tint of the ⓘ it operates on. */
+.details-all {
+  padding: 6px 14px;
+  font-size: 0.78rem;
+  border-style: solid;
+  border-color: var(--accent-200);
+  background: var(--accent-soft);
+  color: var(--accent-700);
+  margin-bottom: 10px;
+}
+.details-all:hover {
+  border-color: var(--accent);
+}
+
+/* One option's researched detail. Every part is optional, so this must look
+   right with a thumbnail alone, chips alone, or a lone line of summary. */
+.option-detail {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.option-detail__thumb {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 12px;
+  background: var(--card-2);
+}
+.option-detail__text {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0; /* lets the summary ellipsize instead of stretching the row */
+}
+.option-detail__summary {
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.option-detail__addr {
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: var(--muted);
+}
+.option-detail__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.option-chip {
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--accent-700);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.option-chip:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+/* Inside the suggestion panel the detail sits on .suggest__item's own card
+   background, and the row above it is already separated — drop the rule. */
+.suggest__item .option-detail {
+  border-top: 0;
+  padding-top: 0;
+}
+/* In results the detail sits between the name row and the bar, so it needs the
+   same breathing room .result-row__top already has below it. */
+.result-row .option-detail {
+  margin-bottom: 10px;
 }
 
 /* ---------- buttons ---------- */
@@ -1219,12 +1374,18 @@ select.input option {
   position: relative; /* anchors the .option-adder corner sticker */
   display: flex;
   align-items: center;
+  /* Wraps so an expanded .option-detail can drop onto its own full-width line
+     below the (tightly packed) name/score/move-button row. */
+  flex-wrap: wrap;
   gap: 10px;
   padding: 12px 14px;
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 18px;
   transition: border-color 0.15s, opacity 0.15s;
+}
+.rank-card .option-detail {
+  flex: 1 0 100%;
 }
 .rank-card[draggable='true'] {
   cursor: grab;

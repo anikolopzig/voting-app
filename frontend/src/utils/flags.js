@@ -15,6 +15,24 @@ export const ROOM_MODE_UI_ENABLED = false;
 // — so flipping this back to true restores the button immediately.
 export const GEOMEAN_METHOD_ENABLED = false;
 
+// AI option details ("Expand with AI"): the ✨ Add details buttons, the ⓘ toggles
+// on the ballot / results / options editor, and the detail rows themselves. When
+// false none of that renders, but the optionMeta data and the /api/expand
+// endpoint stay intact — this is a kill switch, not a delete.
+export const OPTION_DETAILS_ENABLED = true;
+
+// There are two ways to reach the same /api/expand call, and they overlap a lot:
+//   • "✨ Add details to these" — inside the AI suggestions panel, researches the
+//     suggestions you're already looking at, before you accept any.
+//   • "✨ Add details to all"   — the standalone panel, researches whatever is in
+//     the option rows right now.
+// This flag hides ONLY the standalone panel, leaving the in-suggestions button.
+// The one thing lost when it's false: options TYPED BY HAND can no longer be
+// researched, since the suggestions panel only ever sees its own results. Set it
+// false if the extra button isn't earning its space. Ignored entirely when
+// OPTION_DETAILS_ENABLED is false.
+export const STANDALONE_EXPAND_ENABLED = true;
+
 // AI suggestions require a signed-in account (voting never does). When true, that
 // account must also have a VERIFIED email before the suggestions UI unlocks — so
 // "sign up" proves the user controls a real inbox. When false, any signed-in user

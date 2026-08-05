@@ -16,37 +16,19 @@
 // Prompt-injection posture: every user field is untrusted free text. buildPrompt
 // sanitizes each one and fences it in a <tag> so the model can tell data from
 // instructions, then re-asserts the JSON contract last; parseSuggestions cleans,
-// key-validates, de-dupes, and count-caps whatever comes back. See the
+// key-validates, de-dupes, and count-caps whatever comes back. The sanitize /
+// clean / JSON-extract helpers live in ./text.js, shared with expand.js. See the
 // AI-endpoint hardening plan (~/.claude/plans/vivid-baking-babbage.md) for the
 // deferred endpoint-abuse defenses (App Check, rate limiting, Origin gate).
 
 import { GoogleGenAI } from '@google/genai';
+import { sanitizeField, cleanLine, extractJson, FORBIDDEN_KEY_RE } from './text.js';
 
 // ⚠️ Verify this exact id against your Google AI Studio model list
 // (https://ai.google.dev/gemini-api/docs/models). The "-latest" alias tracks the
 // newest flash-lite tier; to pin a version set e.g. 'gemini-2.5-flash-lite'.
 export const MODEL = 'gemini-flash-lite-latest';
-const MAX_LABEL_LEN = 60; // matches maxLength={60} on the option input in CreateRoom
-
-// Mirrors frontend/src/utils/keys.js isValidKey(): a suggested label becomes a
-// Firebase key downstream (optionAuthors[label], scores[label]), so it may not
-// contain any of these. Local copy — backend/ is a separate package with no
-// import path to the frontend src.
-const FORBIDDEN_KEY_RE = /[.#$[\]/]/;
-
-// Neutralize any attempt to break out of the <tag> data fences buildPrompt wraps
-// each field in, or to smuggle instructions: drop control chars (incl. newlines),
-// angle brackets, and backticks; collapse to a single line; clamp length. Angle-
-// bracket removal is a deliberate trade — poll fields almost never need < or >,
-// and removing them guarantees no tag-like structure survives.
-function sanitizeField(value, maxLen) {
-  return String(value ?? '')
-    .replace(/\p{Cc}/gu, ' ')
-    .replace(/[<>`]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, maxLen);
-}
+export const MAX_LABEL_LEN = 60; // matches maxLength={60} on the option input in CreateRoom
 
 export function buildPrompt({ question, location, hint, existing = [], count = 4 }) {
   const system = [
@@ -99,35 +81,20 @@ export function buildPrompt({ question, location, hint, existing = [], count = 4
 // almost always injected payload), labels that can't be a Firebase key are dropped,
 // duplicates are removed, and the list is capped to the requested count.
 export function parseSuggestions(text, { count = 8 } = {}) {
-  let s = (text || '').trim();
-  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence) s = fence[1].trim();
-  if (!s.startsWith('{')) {
-    const brace = s.match(/\{[\s\S]*\}/);
-    if (brace) s = brace[0];
-  }
-
-  const data = JSON.parse(s); // throws on garbage -> caller returns 502
+  const data = JSON.parse(extractJson(text)); // throws on garbage -> caller returns 502
   if (!data || !Array.isArray(data.suggestions)) {
     throw new Error('Response was not in the expected {suggestions:[...]} shape.');
   }
 
-  const clean = (v, max) =>
-    String(v ?? '')
-      .replace(/\p{Cc}/gu, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, max);
-
   const seen = new Set();
   const out = [];
   for (const item of data.suggestions) {
-    const label = clean(item?.label, MAX_LABEL_LEN);
+    const label = cleanLine(item?.label, MAX_LABEL_LEN);
     if (!label || FORBIDDEN_KEY_RE.test(label)) continue; // must be a valid Firebase key
     const key = label.toLowerCase();
     if (seen.has(key)) continue; // server-side de-dupe (complements the client-side one)
     seen.add(key);
-    out.push({ label, why: clean(item?.why, 200) });
+    out.push({ label, why: cleanLine(item?.why, 200) });
     if (out.length >= count) break; // enforce the requested count
   }
   return out;

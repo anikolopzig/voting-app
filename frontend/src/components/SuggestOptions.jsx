@@ -1,6 +1,9 @@
 import { useState } from 'react';
-import { requestSuggestions } from '../utils/suggestions.js';
+import { requestSuggestions, requestDetails } from '../utils/suggestions.js';
+import { sanitizeDetail } from '../utils/optionMeta.js';
+import { OPTION_DETAILS_ENABLED } from '../utils/flags.js';
 import { useAuth } from '../auth/AuthProvider.jsx';
+import OptionDetails from './OptionDetails.jsx';
 
 // Collapsible "let AI suggest options" panel, rendered inside the CreateRoom form.
 // Covers both cases through one request: with a location + hint and no typed
@@ -9,10 +12,20 @@ import { useAuth } from '../auth/AuthProvider.jsx';
 // suggestion carries an accept (✓) / reject (✕) control. Accepting sends the
 // label up via onAccept (CreateRoom places it: blank rows first, never
 // overwriting text); rejecting an already-accepted one pulls it back via onRemove.
-export default function SuggestOptions({ question, existing, onAccept, onRemove }) {
+//
+// `location` is CONTROLLED by the host and shared with <ExpandOptions>: both
+// panels ask for the same thing, so typing it once must be enough — the other
+// panel opening with an empty box you already filled in reads as a bug.
+export default function SuggestOptions({
+  question,
+  existing,
+  onAccept,
+  onRemove,
+  location = '',
+  onLocationChange,
+}) {
   const { user } = useAuth(); // present only because the parent gated us behind sign-in
   const [open, setOpen] = useState(false);
-  const [location, setLocation] = useState('');
   const [hint, setHint] = useState('');
   const [count, setCount] = useState(4);
   const [busy, setBusy] = useState(false);
@@ -20,6 +33,10 @@ export default function SuggestOptions({ question, existing, onAccept, onRemove 
   const [results, setResults] = useState(null); // [{label, why}] once it succeeds
   // Per-label decision: 'accepted' | 'rejected' | undefined (undecided).
   const [decisions, setDecisions] = useState({});
+  // Researched detail per label, from "expand on these". Shown inline here and
+  // carried up through onAccept so an accepted suggestion keeps what we found.
+  const [details, setDetails] = useState({});
+  const [expanding, setExpanding] = useState(false);
 
   const canSuggest = question.trim().length > 0;
 
@@ -47,8 +64,10 @@ export default function SuggestOptions({ question, existing, onAccept, onRemove 
         seen.add(k);
         return true;
       });
-      // A fresh batch starts undecided — the user opts each one in or out.
+      // A fresh batch starts undecided — the user opts each one in or out — and
+      // carries no detail until they ask for it.
       setDecisions({});
+      setDetails({});
       if (!unique.length) {
         setResults(null);
         setError('No suggestions came back — try adding a location or a hint.');
@@ -63,10 +82,44 @@ export default function SuggestOptions({ question, existing, onAccept, onRemove 
     }
   }
 
-  // Accept: add the label to the options (idempotent — onAccept dedupes).
+  // Research the suggestions in place, so the user can judge them before adding
+  // any. Nothing is written anywhere — the detail rides along on accept.
+  async function handleExpand() {
+    setError('');
+    setExpanding(true);
+    try {
+      const idToken = user ? await user.getIdToken() : null;
+      const labels = results.map((s) => s.label);
+      const found = await requestDetails({
+        question: question.trim(),
+        location: location.trim(),
+        options: labels,
+        idToken,
+      });
+      // Sanitize here, at the point it enters app state — the same gate Room.jsx
+      // applies on read, so nothing unvetted can be handed to onAccept.
+      const next = {};
+      for (const d of found) {
+        const clean = sanitizeDetail(d);
+        if (clean && labels.includes(d?.label)) next[d.label] = clean;
+      }
+      if (!Object.keys(next).length) {
+        setError('Could not find details for these suggestions.');
+        return;
+      }
+      setDetails((prev) => ({ ...prev, ...next }));
+    } catch (err) {
+      setError(err.message || 'Could not add details.');
+    } finally {
+      setExpanding(false);
+    }
+  }
+
+  // Accept: add the label to the options (idempotent — onAccept dedupes), along
+  // with whatever we researched for it so the detail isn't lost on the way in.
   function accept(label) {
     if (decisions[label] === 'accepted') return;
-    onAccept([label]);
+    onAccept([label], details[label] ? { [label]: details[label] } : undefined);
     setDecisions((d) => ({ ...d, [label]: 'accepted' }));
   }
   // Reject: mark it out, and if it had been accepted, pull it back out of options.
@@ -114,7 +167,7 @@ export default function SuggestOptions({ question, existing, onAccept, onRemove 
           value={location}
           maxLength={120}
           placeholder="e.g. Kolonaki, Athens"
-          onChange={(e) => setLocation(e.target.value)}
+          onChange={(e) => onLocationChange(e.target.value)}
         />
       </label>
 
@@ -161,6 +214,17 @@ export default function SuggestOptions({ question, existing, onAccept, onRemove 
       {results && (
         <div className="suggest__results">
           <p className="section-note">Here’s what came back — ✓ to add it, ✕ to skip:</p>
+          {OPTION_DETAILS_ENABLED && (
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={handleExpand}
+              disabled={expanding}
+              title="Search the web for details about these suggestions"
+            >
+              {expanding ? '🔎 Searching the web…' : '✨ Add details to these'}
+            </button>
+          )}
           <ul className="suggest__list">
             {results.map((s) => {
               const decision = decisions[s.label];
@@ -176,6 +240,9 @@ export default function SuggestOptions({ question, existing, onAccept, onRemove 
                   <div className="suggest__text">
                     <span className="suggest__label">{s.label}</span>
                     {s.why && <span className="suggest__why">{s.why}</span>}
+                    {/* Always visible here, unlike the ballot: this panel exists
+                        to help you decide, so hiding what we found defeats it. */}
+                    {details[s.label] && <OptionDetails detail={details[s.label]} />}
                   </div>
                   <div className="suggest__actions">
                     <button

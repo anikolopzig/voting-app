@@ -7,9 +7,16 @@ import { saveIdentity } from '../utils/storage.js';
 import { ROOM_TTL_MS } from '../utils/room.js';
 import { INPUT_MODES, DEFAULT_INPUT_MODE_ID, getInputMode } from '../utils/inputModes.js';
 import { ROOM_MODES, DEFAULT_ROOM_MODE, MODE_META } from '../utils/roles.js';
-import { ROOM_MODE_UI_ENABLED, REQUIRE_EMAIL_VERIFICATION } from '../utils/flags.js';
+import {
+  ROOM_MODE_UI_ENABLED,
+  REQUIRE_EMAIL_VERIFICATION,
+  OPTION_DETAILS_ENABLED,
+  STANDALONE_EXPAND_ENABLED,
+} from '../utils/flags.js';
 import { isValidKey, FORBIDDEN_KEY_HINT } from '../utils/keys.js';
 import SuggestOptions from './SuggestOptions.jsx';
+import ExpandOptions from './ExpandOptions.jsx';
+import OptionDetails, { useOpenDetails, ShowAllDetails } from './OptionDetails.jsx';
 import AuthForm from './AuthForm.jsx';
 import { useAuth } from '../auth/AuthProvider.jsx';
 
@@ -27,6 +34,13 @@ export default function CreateRoom({ onError, initialName = '' }) {
   const [name, setName] = useState(initialName);
   const [question, setQuestion] = useState('');
   const [options, setOptions] = useState(['', '']); // start with 2 empty inputs
+  // AI-researched detail per option label, kept local until the room is created
+  // (handleSubmit prunes it to the options that actually ship).
+  const [optionMeta, setOptionMeta] = useState({});
+  // Shared by BOTH AI panels — they ask for the same location, so typing it in
+  // one must fill it in the other. Never persisted; it only shapes AI requests.
+  const [aiLocation, setAiLocation] = useState('');
+  const details = useOpenDetails();
   const [inputMode, setInputMode] = useState(DEFAULT_INPUT_MODE_ID);
   const [mode, setMode] = useState(DEFAULT_ROOM_MODE);
   const [localError, setLocalError] = useState('');
@@ -52,7 +66,10 @@ export default function CreateRoom({ onError, initialName = '' }) {
   // new ones. Never overwrites text the user typed, and skips anything that would
   // duplicate an option already present (case-insensitive) or repeats within the
   // incoming batch — the same uniqueness rule handleSubmit enforces.
-  function acceptSuggestions(labels) {
+  function acceptSuggestions(labels, detailsByLabel) {
+    // Merge liberally: over-storing detail for a label that turns out to be a
+    // duplicate is harmless, because handleSubmit prunes to the final options.
+    if (detailsByLabel) setOptionMeta((m) => ({ ...m, ...detailsByLabel }));
     setOptions((opts) => {
       const present = new Set(opts.map((o) => o.trim().toLowerCase()).filter(Boolean));
       const incoming = [];
@@ -132,10 +149,16 @@ export default function CreateRoom({ onError, initialName = '' }) {
       // get credited in Room.jsx.
       const optionAuthors = {};
       for (const o of trimmedOptions) optionAuthors[o] = creatorLower;
+      // Ship only the detail belonging to options that survived, and omit the key
+      // entirely when there is none — a room with no details must look exactly
+      // like a room created before the feature existed.
+      const meta = {};
+      for (const o of trimmedOptions) if (optionMeta[o]) meta[o] = optionMeta[o];
       await set(ref(db, `rooms/${code}`), {
         question: trimmedQuestion,
         options: trimmedOptions,
         optionAuthors, // { optionLabel: lowercasename } — who added each option
+        ...(Object.keys(meta).length ? { optionMeta: meta } : {}),
         creatorName: creatorLower, // stored lowercase per spec
         createdAt,
         expiresAt: createdAt + ROOM_TTL_MS,
@@ -181,47 +204,89 @@ export default function CreateRoom({ onError, initialName = '' }) {
 
       <div className="field">
         <span className="field__label">Options</span>
+        <ShowAllDetails
+          labels={options.map((o) => o.trim()).filter((o) => optionMeta[o])}
+          view={details}
+        />
         <div className="option-list">
-          {options.map((opt, i) => (
-            <div className="option-row" key={i}>
-              <span className="option-num" aria-hidden="true">
-                {i + 1}
-              </span>
-              <input
-                className="input"
-                type="text"
-                value={opt}
-                maxLength={60}
-                placeholder={`Option ${i + 1}`}
-                onChange={(e) => updateOption(i, e.target.value)}
-              />
-              <button
-                type="button"
-                className="icon-btn"
-                aria-label={`Remove option ${i + 1}`}
-                onClick={() => removeOption(i)}
-                disabled={options.length <= 2}
-                title={options.length <= 2 ? 'At least 2 options required' : 'Remove option'}
-              >
-                ✕
-              </button>
-            </div>
-          ))}
+          {options.map((opt, i) => {
+            // Same ⓘ affordance as the room's editor and the ballot, so "this
+            // option has AI details" looks identical everywhere. Looked up by the
+            // typed text, so it disappears as you rename a row — which is what
+            // happens on save, since details are keyed by label.
+            const label = opt.trim();
+            const detail = optionMeta[label];
+            return (
+              <div className="option-row" key={i}>
+                <span className="option-num" aria-hidden="true">
+                  {i + 1}
+                </span>
+                <input
+                  className="input"
+                  type="text"
+                  value={opt}
+                  maxLength={60}
+                  placeholder={`Option ${i + 1}`}
+                  onChange={(e) => updateOption(i, e.target.value)}
+                />
+                {detail && (
+                  <button
+                    type="button"
+                    className={`option-info${details.isOpen(label) ? ' is-open' : ''}`}
+                    onClick={() => details.toggle(label)}
+                    aria-expanded={details.isOpen(label)}
+                    aria-label={`${details.isOpen(label) ? 'Hide' : 'Show'} AI details for ${label}`}
+                    title={details.isOpen(label) ? 'Hide AI details' : 'Has AI details'}
+                  >
+                    ⓘ
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label={`Remove option ${i + 1}`}
+                  onClick={() => removeOption(i)}
+                  disabled={options.length <= 2}
+                  title={options.length <= 2 ? 'At least 2 options required' : 'Remove option'}
+                >
+                  ✕
+                </button>
+                {details.isOpen(label) && <OptionDetails detail={detail} />}
+              </div>
+            );
+          })}
         </div>
-        <button type="button" className="btn btn--ghost" onClick={addOption}>
-          + Add option
-        </button>
-
-        <div className="suggest-slot">
+        {/* "+ Add option" and both AI panels share one row, matching the room's
+            options editor. ExpandOptions researches whatever is in the rows right
+            now — including options typed by hand, which the suggestion panel never
+            sees. Nothing hits Firebase until the room is created. */}
+        <div className="options-actions">
+          <button type="button" className="btn btn--ghost" onClick={addOption}>
+            + Add option
+          </button>
           {canUseAI ? (
             <SuggestOptions
               question={question}
               existing={options.map((o) => o.trim()).filter(Boolean)}
               onAccept={acceptSuggestions}
               onRemove={removeSuggestion}
+              location={aiLocation}
+              onLocationChange={setAiLocation}
             />
           ) : (
             <AuthForm prompt="Sign in to use AI suggestions" />
+          )}
+          {OPTION_DETAILS_ENABLED && STANDALONE_EXPAND_ENABLED && canUseAI && (
+            <ExpandOptions
+              question={question}
+              options={options.map((o) => o.trim()).filter(Boolean)}
+              onDetails={(byLabel) => {
+                setOptionMeta((m) => ({ ...m, ...byLabel }));
+                return true;
+              }}
+              location={aiLocation}
+              onLocationChange={setAiLocation}
+            />
           )}
         </div>
       </div>

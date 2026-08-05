@@ -111,8 +111,10 @@ frontend/src/              (frontend/ also has index.html, vite.config.js, packa
                            saveOptions +
                            acceptSuggestions/removeSuggestion (write options +
                            optionAuthors via authorsFor()), leaveRoom (drop
-                           presence+vote → home). Also hosts <SuggestOptions> for
-                           ministers+ (iCanEditOptions). Presence written
+                           presence+vote → home), applyOptionDetails (write
+                           optionMeta/{label} paths ONLY). Passes <SuggestOptions>
+                           + <ExpandOptions> to <OptionsEditor> as its `actions`
+                           slot, for ministers+ (iCanEditOptions). Presence written
                            once on load + removed on unmount/onDisconnect.
                            Redirects if no identity. Layout: a pinned full-width
                            white bar (.room-topbar) at the top holds the
@@ -124,10 +126,13 @@ frontend/src/              (frontend/ also has index.html, vite.config.js, packa
                            hidden behind ROOM_MODE_UI_ENABLED — mode still seeded
                            from DEFAULT_ROOM_MODE); seeds
                            status:{creator:'president'} + optionAuthors (all seed
-                           options credited to the creator). Hosts <SuggestOptions>;
-                           acceptSuggestions() fills blank option rows first, then
-                           appends (never overwrites); removeSuggestion() undoes a
-                           rejected one (keeps the 2-row min). initialName pre-fills on leave.
+                           options credited to the creator) + optionMeta (omitted
+                           when empty). Hosts <SuggestOptions> + <ExpandOptions> in
+                           an .options-actions row beside "+ Add option", matching
+                           the room's editor; acceptSuggestions(labels, meta) fills
+                           blank option rows first, then appends (never
+                           overwrites); removeSuggestion() undoes a rejected one
+                           (keeps the 2-row min). initialName pre-fills on leave.
                            Rendered by the Create page (no own title); option rows
                            carry a numbered .option-num badge.
     ModeToggle.jsx         Header segmented control for room mode (conversation/
@@ -138,13 +143,64 @@ frontend/src/              (frontend/ also has index.html, vite.config.js, packa
                            component + setMode logic are intact, just not rendered.
     OptionsEditor.jsx      Live options editor (shown when canEditOptions); writes
                            the whole options array. Keyed on the option set.
+                           `actions` is a slot rendered beside "+ Add option" in an
+                           .options-actions row — the room passes both AI panels in
+                           there, so adding and enriching options live together
+                           instead of floating below the card. `optionMeta` lights
+                           a ⓘ on rows that already carry AI details (click to see
+                           them). The ⓘ is looked up by the DRAFT text, so renaming
+                           a row makes it vanish as you type — which is honest:
+                           details are label-keyed, so a rename really does drop
+                           them. The editor stays unaware of AI itself.
     SuggestOptions.jsx     Collapsible "suggest options with AI" panel (location
                            + hint + count). Calls requestSuggestions(); NOTHING is
                            auto-added — each result gets a ✓ accept / ✕ reject
-                           control (green/red outline). Accept → onAccept([label]);
-                           rejecting an accepted one → onRemove(label). Used in the
-                           create form AND in the room (ministers+); the host wires
-                           onAccept/onRemove to local state or Firebase.
+                           control (green/red outline). Accept →
+                           onAccept([label], metaByLabel?); rejecting an accepted
+                           one → onRemove(label). Used in the create form AND in
+                           the room (ministers+); the host wires onAccept/onRemove
+                           to local state or Firebase. Also hosts "✨ Add details
+                           to these": researches the suggestions IN PLACE (always
+                           visible here — the panel exists to help you decide) and
+                           passes each one's detail up through onAccept's second
+                           argument, so accepting doesn't lose it. `location` is
+                           CONTROLLED by the host and shared with <ExpandOptions>,
+                           so it's only ever typed once.
+    ExpandOptions.jsx      "✨ Add details to all" — researches the options that
+                           ALREADY exist, including ones TYPED BY HAND, which the
+                           suggestion panel never covers (that's the only reason it
+                           exists alongside "Add details to these"; gated by
+                           STANDALONE_EXPAND_ENABLED). Shares the suggestion
+                           panel's location via a controlled `location` prop; calls
+                           requestDetails(), sanitizes each result, then
+                           onDetails(detailsByLabel) → boolean. Deliberately NOT a
+                           .card: ministers already stack the options editor +
+                           suggest panel above the ballot. Used in the create form
+                           (fills local state) and the room (ministers+ write to
+                           Firebase). Reports "Added details for N of M options" —
+                           partial results are a normal outcome, not an error.
+    OptionDetails.jsx      The ONE renderer for an option's researched detail,
+                           shared by the ballot, the results and the suggest panel.
+                           Also exports the two pieces every option-listing
+                           surface reuses so expanding behaves identically in all
+                           of them: useOpenDetails() (a SET of expanded labels —
+                           multi-open, so "show all" is meaningful and two rows can
+                           be pinned open to compare) and <ShowAllDetails labels
+                           view>, the "ⓘ Show all option details (N)" button that
+                           sits above a list. That button renders NOTHING when no
+                           option has details, and its count answers "how many of
+                           these actually have any?" at a glance.
+                           Takes an ALREADY-SANITIZED detail (the caller owns that,
+                           so there's a single audit point). Thumbnail + summary +
+                           address + "🔗 host ↗" / "📍 Map ↗" chips; absent fields
+                           render nothing, and a null detail renders nothing at all.
+                           Every anchor is target=_blank rel="noopener noreferrer
+                           nofollow" referrerPolicy="no-referrer" (the room URL IS
+                           the access credential — don't ship it to third parties).
+                           The link chip shows the real HOSTNAME, never the model's
+                           title. draggable={false} throughout, because this sits
+                           inside the draggable .rank-card and a natively-draggable
+                           image would hijack the ranked-choice reorder.
     JoinRoom.jsx           Join form; 4 error cases; case-insensitive lookup
     VotingSection.jsx      Input depends on room.inputMode: 1–10 slider (step 1
                            or 0.1), or ranked-choice drag cards (+ ▲▼ buttons,
@@ -245,7 +301,30 @@ frontend/src/              (frontend/ also has index.html, vite.config.js, packa
                            EvaluatorToggle bar; the method stays in METHODS[].
                            REQUIRE_EMAIL_VERIFICATION (=true) makes AI suggestions
                            require a VERIFIED-email account (must match the same
-                           const in backend/index.js). Flip any to true/false.
+                           const in backend/index.js). OPTION_DETAILS_ENABLED
+                           (=true) is the kill switch for AI option details — hides
+                           the ✨ Add details buttons, the ⓘ toggles and the detail
+                           rows, leaving optionMeta data and /api/expand intact.
+                           STANDALONE_EXPAND_ENABLED (=true) hides ONLY the
+                           <ExpandOptions> panel, keeping "Add details to these"
+                           inside the suggestions panel; the cost of false is that
+                           hand-typed options can no longer be researched (the
+                           suggestions panel only sees its own results).
+                           Flip any to true/false.
+    optionMeta.js          AI option details: READ-TIME sanitizer + render helpers.
+                           THE TRUST BOUNDARY — RTDB runs on open test rules, so
+                           anyone with the room code can PUT anything into
+                           optionMeta; server validation guards the honest path,
+                           this guards the browser. sanitizeDetail() re-applies
+                           every cap and re-runs safeHttpUrl (mirror of
+                           backend/text.js safeUrl); an image URL must ALSO be on
+                           IMAGE_HOSTS (upload.wikimedia.org). sanitizeMetaMap(raw,
+                           options) does the whole node and drops entries whose
+                           label is no longer an option. mapsUrlFor(place) builds
+                           the keyless Google Maps deep link at RENDER time (never
+                           stored, so it can't be poisoned). hostLabel() gives a
+                           link chip its visible text — the real hostname, never
+                           the model's own title.
     keys.js                isValidKey() + FORBIDDEN_KEY_HINT. Option labels and
                            lowercase names are used directly as Firebase keys, so
                            create/join/edit reject any containing . # $ [ ] /
@@ -254,10 +333,14 @@ frontend/src/              (frontend/ also has index.html, vite.config.js, packa
     inputModes.js          INPUT_MODES[] + getInputMode() + scoreForRank()
                            + DEFAULT_INPUT_MODE_ID
     participantColor.js    PARTICIPANT_COLORS + colorForName() + initialFor()
-    suggestions.js         requestSuggestions({..., idToken}) — POSTs /api/suggest
-                           with an `Authorization: Bearer <idToken>` header (the
-                           endpoint requires a Firebase Auth token); returns
-                           [{label, why}] or throws a user-readable Error.
+    suggestions.js         Fetch wrappers for BOTH AI endpoints, over a shared
+                           postJson() that adds `Authorization: Bearer <idToken>`
+                           (both endpoints require a Firebase Auth token) and a 70s
+                           AbortSignal.timeout so a hung request fails readably
+                           instead of spinning. requestSuggestions() → [{label,
+                           why}]; requestDetails({question, location, options,
+                           idToken}) → [{label, summary?, link?, place?, image?}].
+                           Both throw a user-readable Error.
   styles/global.css        One stylesheet. Light "Organic" theme (warm cream),
                            mobile-first, CSS vars. Accent = terracotta --accent
                            (#c67139); secondary = sage --sage. Fonts via Google
@@ -265,32 +348,78 @@ frontend/src/              (frontend/ also has index.html, vite.config.js, packa
                            (.suggest* = AI panel.) The design's scattered "sticker"
                            background + ballot mascot were intentionally omitted.
 
-backend/                   The ONLY server-side code. Firebase Cloud Function (v2,
+backend/                   The ONLY server-side code. Firebase Cloud Functions (v2,
                            Node 20, ESM). Exists to hold the Gemini API key
                            server-side; no voting logic here, no DB access.
+                           TWO endpoints, sharing one auth gate + error mapping.
   package.json             deps: @google/genai, firebase-admin, firebase-functions.
-  index.js                 onRequest handler `suggestOptions`: Origin allowlist,
-                           then **Firebase Auth ID-token verification** (Bearer
-                           header → firebase-admin getAuth().verifyIdToken; 401 if
+  index.js                 Exports `suggestOptions` (/api/suggest) and
+                           `expandOptions` (/api/expand). Shared
+                           requireVerifiedCaller(): Origin allowlist → POST-only →
+                           **Firebase Auth ID-token verification** (Bearer header →
+                           firebase-admin getAuth().verifyIdToken; 401 if
                            missing/invalid, 403 if EMAIL_VERIFICATION_REQUIRED and
                            the email isn't verified — its own try/catch, before the
-                           Gemini one), request validation, error → HTTP mapping.
-                           Key via defineSecret('GEMINI_API_KEY'); no secret needed
-                           for auth (Admin SDK uses the service account / the auth
-                           emulator).
+                           Gemini one). Shared sendAiError() maps refusal→422,
+                           timeout/network→503, 429→429, else 502. SOFT_DEADLINE_MS
+                           (45s) rejects before Firebase Hosting's ~60s proxy cap,
+                           which would otherwise return an HTML 504 the client
+                           can't parse — raising timeoutSeconds past 60 does NOT
+                           help. Key via defineSecret('GEMINI_API_KEY'); no secret
+                           needed for auth (Admin SDK uses the service account /
+                           the auth emulator).
+  text.js                  Shared pure helpers for BOTH prompts — sanitizeField
+                           (strips control chars/<>/backticks, single-lines,
+                           clamps), cleanLine, clampWords (word-boundary truncate
+                           + ellipsis), extractJson, FORBIDDEN_KEY_RE (mirrors
+                           utils/keys.js), and safeUrl()/hostLabel(). safeUrl is
+                           THE url gate: https only (http is upgraded, not
+                           rejected — models report http constantly), no
+                           credentials, no ports, no IP literals, no dotless hosts,
+                           fragments stripped. Mirrored in utils/optionMeta.js.
   suggest.js               Pure buildPrompt() + callGemini() (no firebase import;
                            runnable as `node suggest.js "..."`). Model + Google
                            Search grounding details live here. PROMPT-INJECTION
-                           HARDENING: every untrusted field is sanitized
-                           (sanitizeField: strips control chars/<>/backticks,
-                           single-lines, clamps) and fenced in a <tag>, with a
-                           system "treat tag/web content as untrusted data" clause
-                           + a trailing re-assertion of the JSON contract;
-                           parseSuggestions cleans, rejects labels that aren't
-                           valid Firebase keys (FORBIDDEN_KEY_RE mirrors
-                           utils/keys.js), de-dupes, and caps to count.
-firebase.json              Hosting (public frontend/dist/) + rewrites: /api/** →
-                           function BEFORE the ** SPA catch-all (order matters).
+                           HARDENING: every untrusted field is sanitized and fenced
+                           in a <tag>, with a system "treat tag/web content as
+                           untrusted data" clause + a trailing re-assertion of the
+                           JSON contract; parseSuggestions cleans, rejects labels
+                           that aren't valid Firebase keys, de-dupes, caps to count.
+  expand.js                Pure two-call "expand on them" logic (runnable as
+                           `node expand.js "q" "loc" "opt1,opt2"`). TWO CALLS BY
+                           NECESSITY: a strict JSON contract in the system prompt
+                           SUPPRESSES tool use (measured: 0 searches with it, 4–5
+                           searches without), so buildResearchPrompt() runs
+                           free-form + grounded (RESEARCH_MODEL) and
+                           buildFormatPrompt() then reshapes that report into JSON
+                           with no tools (FORMAT_MODEL). INDEX-KEYED I/O: options
+                           go in as <option index="N"> and answers come back keyed
+                           by index, so the model NEVER emits a label and can never
+                           influence a Firebase key. parseDetails maps index →
+                           labels[index-1], runs safeUrl on links, requires
+                           name+address for a place, drops imageQuery whenever a
+                           place exists (the venue/concept split, enforced in code
+                           not prompt), and salvages individual objects from a
+                           truncated response. Logs `searches=N` — if that's ever 0,
+                           grounding has silently stopped firing.
+  wiki.js                  resolveWikiImage(title) — keyless English Wikipedia REST
+                           summary lookup → an upload.wikimedia.org thumbnail.
+                           SSRF-proof by construction: the model supplies a PATH
+                           SEGMENT (regex-validated, encodeURIComponent'd), never a
+                           URL, and the host is hardcoded. Requires a descriptive
+                           User-Agent (Wikimedia 403s anonymous datacenter clients
+                           — omitting it works locally and fails in prod). Every
+                           failure returns null; an image is never worth failing a
+                           request over.
+firebase.json              Hosting (public frontend/dist/) + rewrites: ONE ENTRY
+                           PER ENDPOINT (/api/suggest, /api/expand) BEFORE the **
+                           SPA catch-all — order matters, and a wildcard /api/**
+                           would silently route every path to one function. Also a
+                           narrow CSP header: img-src limits option images to
+                           upload.wikimedia.org, so the host allowlist is enforced
+                           by the BROWSER too. Deliberately no default-src, so
+                           scripts/styles/fonts/the RTDB socket are unconstrained
+                           and the policy can't break the app.
                            functions.source = backend/.
 .firebaserc                Pins the default project (groupvote-12796).
 ```
@@ -311,6 +440,18 @@ rooms/
                                       // scores. Absent on old rooms -> no sticker.
                                       // Creator seeds theirs; ministers+ get
                                       // credited when they add/AI-suggest one.
+    optionMeta/                       // AI-researched detail ("expand with AI").
+      {optionLabel}/                  // Same label key as optionAuthors. Absent on
+                                      // old rooms + rooms never expanded -> no ⓘ,
+                                      // and the option renders exactly as before.
+        summary: string               // <=140      EVERY FIELD IS OPTIONAL — the
+        link:  { url, title }         // url <=200, https-only (http upgraded)
+        place: { name, address }      // <=80/<=120, BOTH required (drives the map)
+        image: { url, alt, credit }   // url host MUST be upload.wikimedia.org
+                                      // shape is ADAPTIVE: a specific venue gets
+                                      // link+place, a general concept gets image,
+                                      // and an option nothing was found for is
+                                      // simply absent from the node.
     creatorName: string               // stored LOWERCASE (reserved name)
     createdAt:   number               // Date.now() at creation
     expiresAt:   number               // createdAt + 15*60*1000
@@ -654,6 +795,81 @@ scripted verified account can still loop) and — now largely redundant given th
 token — tightening the Origin gate. **Firebase App Check** is superseded for this
 app by the auth requirement (keep it in mind only if an anonymous flow is ever
 added). Full write-up: `~/.claude/plans/vivid-baking-babbage.md`.
+
+### AI option details — "expand on them" (`/api/expand`)
+
+Researches the options a room already has and attaches **adaptive** detail:
+a specific venue gets a website link + a keyless Google Maps deep link, a general
+concept ("Italian", "Greek") gets a Wikipedia picture, and an option nothing was
+found for gets nothing at all. Stored in `optionMeta` (see the data model), pushed
+to everyone by the one `onValue`. Two entry points onto the same `/api/expand`
+call, both in the create form and the room:
+
+| Entry point | Covers | Flag |
+|---|---|---|
+| "✨ Add details to these" — inside `SuggestOptions` | the AI suggestions you're looking at, *before* you accept any | `OPTION_DETAILS_ENABLED` |
+| "✨ Add details to all" — the standalone `ExpandOptions` panel | whatever is in the option rows now, **including hand-typed options** | `+ STANDALONE_EXPAND_ENABLED` |
+
+They overlap heavily by design; the second exists only because the first can
+never see an option someone typed. `STANDALONE_EXPAND_ENABLED = false` drops it
+and accepts that limitation. Both panels share ONE location field, held by the
+host (`aiLocation` in `Room.jsx` / `CreateRoom.jsx`) and passed down controlled —
+they ask for the same thing, so opening the second with an empty box you already
+filled in would read as a bug.
+
+**Four surfaces list options, and all four show details identically** — the create
+form, the room's `OptionsEditor`, the ballot (`VotingSection`, both input modes)
+and `ResultsSection`. Each renders a ⓘ per option that has detail, plus a
+"Show all option details (N)" button above the list, both from `OptionDetails.jsx`
+(`useOpenDetails` + `<ShowAllDetails>`). Add a fifth surface and it must use the
+same two exports — "does this option have details?" has to look the same
+everywhere, or the answer stops being trustworthy. The ⓘ is accent-tinted at rest
+rather than muted precisely because its presence IS the signal; a grey one reads
+as a disabled control.
+
+Five decisions worth not re-litigating:
+
+1. **Two Gemini calls, not one.** A strict `Return ONLY JSON` contract in the
+   system prompt *suppresses tool use* — measured on this exact prompt, grounding
+   returned **0 search queries / 0 chunks** with the contract and **4–5 queries /
+   13–16 chunks** without it, on both flash and flash-lite. So step 1 researches
+   free-form **with** grounding and step 2 reshapes that report into JSON **with
+   no tools**. Merging them back into one call silently reverts the feature to
+   parametric recall — which still *looks* like it works, because the model
+   confidently invents plausible addresses. Watch the `searches=N` log line.
+2. **Index-keyed model I/O.** Options go in as `<option index="N">` and come back
+   keyed by index; `parseDetails` maps `index → labels[index-1]`. The model never
+   emits a label, so it can never influence a Firebase key, rename an option, or
+   invent an entry. This path is riskier than `/api/suggest` in both directions
+   (grounding pulls attacker-controllable pages *in*, the UI surfaces clickable
+   URLs *out*), which is why it's hardened further rather than the same.
+3. **Wikipedia is the only image source.** The model returns a *concept term*, not
+   a URL; `backend/wiki.js` resolves it against a hardcoded host with an
+   `encodeURIComponent`'d path segment (so it's SSRF-proof by construction) and
+   only accepts `upload.wikimedia.org` back. That one-host allowlist is the whole
+   point — it's enforceable in the backend, in `sanitizeDetail`, *and* in the CSP
+   `img-src`. A "let the model return any image URL" design has none of that.
+   The natural consequence — no image for a specific local business — is correct,
+   not a gap: those get a link and a map instead.
+4. **Maps is a keyless deep link**, built at render time by `mapsUrlFor(place)`.
+   No Maps API key, no billing, no SDK; on a phone the OS opens the Maps app. It's
+   built from `place`, never stored as a URL, so it can't be poisoned in the DB.
+5. **Sanitize on READ, in `Room.jsx`, once.** RTDB is world-writable to anyone
+   with the room code, so `optionMeta` is attacker-controlled no matter what the
+   Cloud Function validated. `sanitizeMetaMap` is the trust boundary; the backend
+   checks are defence in depth. Never pass `room.optionMeta` to a component raw.
+
+Also: `applyOptionDetails` writes **only** `optionMeta/{label}` paths, never
+`options`. `VotingSection` is keyed on `room.options.join('|')`, so touching
+`options` would remount the ballot and wipe half-set sliders — expanding details
+mid-vote must not do that. (And RTDB rejects a whole-object `optionMeta` key
+alongside `optionMeta/{label}` paths in the same `update()` — overlapping paths.)
+
+**Deferred:** URL liveness checks (a datacenter `HEAD` is 403'd by bot management
+on many real sites, so it would delete *correct* links); cross-checking links
+against `groundingMetadata` chunks (log first, enforce once the data says it's
+usable); per-account rate limiting — expand costs more per call than suggest, so
+this matters more than it did.
 
 ### Other open ideas
 

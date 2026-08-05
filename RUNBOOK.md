@@ -27,6 +27,7 @@ Then sanity-check:
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" https://groupvote-12796.web.app/         # 200
 curl -s -o /dev/null -w "%{http_code}\n" https://groupvote-12796.web.app/api/suggest  # 405 (POST-only)
+curl -s -o /dev/null -w "%{http_code}\n" https://groupvote-12796.web.app/api/expand   # 405 (POST-only)
 ```
 
 ---
@@ -64,15 +65,35 @@ curl -s -o /dev/null -w "%{http_code}\n" https://groupvote-12796.web.app/api/sug
 Two terminals:
 
 ```bash
-# terminal 1 — from repo ROOT: Functions (/api/suggest on :5001) + Auth (:9099)
+# terminal 1 — from repo ROOT: Functions (/api/suggest + /api/expand on :5001)
+#               + Auth (:9099)
 firebase emulators:start --only auth,functions
 
-# terminal 2 — the client on :5173, proxying /api/suggest to the emulator
+# terminal 2 — the client on :5173, proxying both /api/* routes to the emulator
 cd frontend && npm run dev
 ```
 
-Open http://localhost:5173. `frontend/vite.config.js` proxies `/api/suggest` to the
-functions emulator, so dev behaves like prod.
+Open http://localhost:5173. `frontend/vite.config.js` proxies `/api/suggest` and
+`/api/expand` to the functions emulator, so dev behaves like prod. Each endpoint
+needs **its own proxy entry** — every `rewrite` returns a constant path, so one
+`/api` key would funnel both routes into the same function. Same rule in
+`firebase.json`: one rewrite per endpoint, never a `/api/**` wildcard.
+
+The pure backend modules also run standalone, which is much the fastest way to
+iterate on the prompts (no emulator, no browser, no sign-in):
+
+```bash
+cd backend && set -a && . ./.secret.local && set +a
+node wiki.js "Greek cuisine"                       # -> an upload.wikimedia.org thumb
+node wiki.js "Some Local Bistro"                   # -> null (correct: no article)
+node expand.js "Where should we eat?" "Kolonaki, Athens" "Hoocut,Nice n Easy"
+node expand.js "What kind of food?" "" "Italian,Greek,Thai"
+```
+
+⚠️ Watch the `expand: searches=N` line. **N must be > 0** — `searches=0` means
+Google Search grounding stopped firing and the model is answering from memory,
+which still returns confident, plausible, *made-up* addresses. See CLAUDE.md →
+"AI option details" for why the endpoint makes two calls.
 
 **Why both emulators:** AI suggestions are gated behind a Firebase Auth account
 (voting is not), and `/api/suggest` **verifies the caller's ID token**. Starting
@@ -119,19 +140,53 @@ BASE=https://groupvote-12796.web.app
 curl -s -o /dev/null -w "root:        %{http_code}\n" "$BASE/"            # 200
 curl -s -o /dev/null -w "deep link:   %{http_code}\n" "$BASE/room/TEST12" # 200 (SPA rewrite)
 curl -s -o /dev/null -w "api GET:     %{http_code}\n" "$BASE/api/suggest" # 405 (function live)
+curl -s -o /dev/null -w "expand GET:  %{http_code}\n" "$BASE/api/expand"  # 405 (function live)
 curl -s -X POST -H 'Content-Type: application/json' \
   -d '{"question":"Coffee?","location":"Athens","count":3}' \
   -w "\napi POST:    %{http_code}\n" "$BASE/api/suggest"                  # 401 (no auth token)
+# Proves /api/expand routes to its OWN function: the message must say "AI details",
+# not "AI suggestions". If it says suggestions, the rewrite is wrong.
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"question":"Coffee?","options":["a","b"]}' "$BASE/api/expand"      # "Sign in to use AI details."
 ```
 
-The `api POST` check now returns **401** — the endpoint requires a Firebase Auth
-ID token, so `curl` without one is correctly rejected (that's the point). To smoke
-the full suggestions path, sign in on the live site and use the in-app "✨ Suggest
-options" panel; the browser attaches the `Authorization: Bearer …` token.
+The `api POST` checks return **401** — both endpoints require a Firebase Auth ID
+token, so `curl` without one is correctly rejected (that's the point). To smoke the
+full AI paths, sign in on the live site and use the in-app "✨ Suggest options" and
+"✨ Add details to all" panels; the browser attaches the `Authorization: Bearer …`
+token.
+
+Also confirm the CSP didn't break anything: open the live site with the browser
+console visible and check for `Content-Security-Policy` violations. The policy
+constrains only `img-src` / `frame-src` / `object-src` and sets no `default-src`,
+so scripts, styles, Google Fonts and the RTDB websocket are untouched — but a
+CSP header only exists on **deployed Hosting**, never under `npm run dev` or
+`npm run preview`, so this is the first place it can be observed at all.
 
 ---
 
 ## Pitfalls (symptom → cause → fix)
+
+0. **AI details are confidently wrong — plausible addresses for places that don't
+   exist there, or links to the wrong business.** Google Search grounding stopped
+   firing, so the model is answering from memory instead of searching. → Run
+   `node expand.js …` and read the `expand: searches=N` line: **0 means not
+   grounded**. The usual cause is someone merging `/api/expand`'s two Gemini calls
+   back into one — a strict "return ONLY JSON" contract in the same prompt as the
+   `googleSearch` tool suppresses tool use entirely. Keep the research call
+   free-form and let the second call do the JSON. See CLAUDE.md → "AI option
+   details". Note this failure mode is invisible from the UI: the output looks
+   completely normal.
+
+0b. **`/api/expand` returns suggestions, or "Sign in to use AI suggestions".**
+   A `/api/**` wildcard rewrite in `firebase.json` is catching it and routing to
+   `suggestOptions` — Hosting rewrites are first-match-wins. → One explicit
+   rewrite per endpoint, both before the `**` SPA catch-all. Same trap in
+   `frontend/vite.config.js`, where each `rewrite` returns a constant path.
+
+0c. **Option images silently never appear in prod but work locally.** Wikimedia
+   403s clients without a descriptive `User-Agent`. → `backend/wiki.js` must send
+   one; it fails closed (returns `null`), so there is no error, just no image.
 
 1. **"Site Not Found" / everything 404s after deploy.**
    `frontend/dist/` was empty/missing at deploy time, or the deploy aborted before

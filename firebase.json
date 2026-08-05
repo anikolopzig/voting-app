@@ -4,10 +4,25 @@
     "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
     "rewrites": [
       {
-        "source": "/api/**",
+        "source": "/api/suggest",
         "function": { "functionId": "suggestOptions", "region": "us-central1" }
       },
+      {
+        "source": "/api/expand",
+        "function": { "functionId": "expandOptions", "region": "us-central1" }
+      },
       { "source": "**", "destination": "/index.html" }
+    ],
+    "headers": [
+      {
+        "source": "**",
+        "headers": [
+          {
+            "key": "Content-Security-Policy",
+            "value": "img-src 'self' data: https://upload.wikimedia.org; frame-src 'none'; object-src 'none'"
+          }
+        ]
+      }
     ]
   },
   "functions": {
